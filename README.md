@@ -3,9 +3,7 @@
 a native web app for [pi](https://pi.dev), backed by the pi sdk runtime
 and your existing persisted pi sessions.
 
-<video src="https://github.com/khimaros/pi-webui/raw/master/docs/screencast.mp4" controls width="720"></video>
-
-(if the video doesn't play inline, [download it here](docs/screencast.mp4).)
+![screencast](docs/screencast.gif)
 
 ## getting started
 
