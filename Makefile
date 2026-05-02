@@ -15,7 +15,7 @@ CURL              := curl -fsSL
 
 JS_SOURCES        := $(shell find . -name node_modules -prune -o \( -name '*.mjs' -o -name '*.js' \) -not -path './public/vendor/*' -print)
 
-.PHONY: build lint test precommit start start-dev install update vendor vendor-clean
+.PHONY: build lint test precommit start start-dev install update vendor vendor-clean pack publish
 
 .DEFAULT_GOAL := build
 
@@ -43,6 +43,13 @@ start-dev: node_modules
 
 install:
 	@npm install -g .
+
+pack: node_modules
+	@mkdir -p build
+	@npm pack --pack-destination build
+
+publish: node_modules
+	@npm publish --access public
 
 update:
 	@npm update

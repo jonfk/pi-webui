@@ -41,4 +41,5 @@
 [x] event log for replay and debugging
 [x] static asset vendoring via `make vendor`
 [x] published as `@khimaros/pi-webui` with `pi-webui` bin
+[x] `make pack` and `make publish` targets
 ```

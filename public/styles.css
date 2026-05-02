@@ -1,9 +1,9 @@
 :root {
   color-scheme: dark;
-  --bg: #161513;
-  --panel: #1c1b18;
-  --panel-2: #1a1916;
-  --border: #2a2825;
+  --bg: #0d0d0d;
+  --panel: #141414;
+  --panel-2: #121212;
+  --border: #242424;
   --text: #e0dccf;
   --muted: #807a70;
   --accent: #d97757;     /* anthropic orange */
