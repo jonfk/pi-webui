@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { createReadStream, existsSync, readFileSync, watch as fsWatch } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch } from "node:fs";
 import { extname, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
@@ -36,6 +36,7 @@ import {
 } from "./server-watch.mjs";
 import { createEventLog } from "./server-event-log.mjs";
 import { log as logger } from "./server-log.mjs";
+import { createExtUiBridge } from "./server-ext-ui.mjs";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
@@ -52,23 +53,128 @@ function parseListen(spec) {
   throw new Error(`invalid --listen value: ${spec}`);
 }
 
+function printHelp() {
+  const lines = [
+    "usage: pi-webui [options]",
+    "",
+    "a native web app for pi, backed by the pi sdk runtime and your",
+    "existing persisted pi sessions.",
+    "",
+    "options:",
+    "  --listen <host:port>  http bind address; takes precedence over HOST/PORT.",
+    "                        use ':port' for default host, or '[::1]:port' for ipv6.",
+    "  -h, --help            show this help and exit",
+    "",
+    "environment variables:",
+    `  HOST              http bind host (default ${DEFAULT_HOST})`,
+    `  PORT              http bind port (default ${DEFAULT_PORT})`,
+    "  PI_PROJECT_CWD    project directory used for sessions (default cwd)",
+    "  PI_AGENT_DIR      pi agent config directory (default ~/.pi/agent)",
+    "  PI_SESSION_DIR    session storage directory (default pi default)",
+    "",
+    "examples:",
+    "  pi-webui --listen 0.0.0.0:3000",
+    "  HOST=0.0.0.0 PORT=3000 pi-webui",
+  ];
+  process.stdout.write(lines.join("\n") + "\n");
+}
+
 function parseArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--listen") out.listen = argv[++i];
     else if (a.startsWith("--listen=")) out.listen = a.slice("--listen=".length);
+    else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
   return out;
 }
 
-const args = parseArgs(process.argv.slice(2));
+let args;
+try {
+  args = parseArgs(process.argv.slice(2));
+} catch (error) {
+  process.stderr.write(`${error.message}\n\n`);
+  printHelp();
+  process.exit(2);
+}
+if (args.help) {
+  printHelp();
+  process.exit(0);
+}
 const listenFromArg = args.listen ? parseListen(args.listen) : null;
 const host = listenFromArg?.host ?? process.env.HOST ?? DEFAULT_HOST;
 const port = listenFromArg?.port ?? Number(process.env.PORT || DEFAULT_PORT);
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "public");
 const appCwd = resolve(process.env.PI_PROJECT_CWD || process.cwd());
+const HOME_DIR = process.env.HOME || "";
+const ALLOW_ANY_CWD = process.env.PI_CWD_ALLOW_ANY === "1";
+
+function expandTilde(p) {
+  if (!p) return p;
+  if (p === "~") return HOME_DIR;
+  if (p.startsWith("~/")) return resolve(HOME_DIR, p.slice(2));
+  return p;
+}
+
+function validateCwdTarget(target) {
+  if (!target) throw new Error("path is required");
+  const expanded = expandTilde(target);
+  if (!isAbsolute(expanded)) throw new Error("path must be absolute");
+  const resolved = resolve(expanded);
+  if (!existsSync(resolved)) throw new Error(`path does not exist: ${resolved}`);
+  if (!statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
+  if (!ALLOW_ANY_CWD && HOME_DIR && resolved !== HOME_DIR && !resolved.startsWith(HOME_DIR + "/")) {
+    throw new Error(`path must be inside ${HOME_DIR} (set PI_CWD_ALLOW_ANY=1 to override)`);
+  }
+  return resolved;
+}
+
+function isCwdReachable(resolved) {
+  if (ALLOW_ANY_CWD) return true;
+  if (!HOME_DIR) return true;
+  if (resolved === HOME_DIR) return true;
+  if (resolved.startsWith(HOME_DIR + "/")) return true;
+  // also allow listing ancestors of $HOME so the picker can navigate toward it.
+  return HOME_DIR === resolved || HOME_DIR.startsWith(resolved + "/");
+}
+
+function listDirectories(target) {
+  const expanded = expandTilde(target);
+  if (!isAbsolute(expanded)) throw new Error("path must be absolute");
+  const resolved = resolve(expanded);
+  if (!existsSync(resolved)) throw new Error(`path does not exist: ${resolved}`);
+  if (!statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
+  if (!isCwdReachable(resolved)) {
+    throw new Error(`path must be inside ${HOME_DIR} (set PI_CWD_ALLOW_ANY=1 to override)`);
+  }
+  const entries = readdirSync(resolved, { withFileTypes: true })
+    .filter((d) => {
+      if (!d.isDirectory()) return false;
+      if (d.name.startsWith(".")) return false;
+      return true;
+    })
+    .map((d) => ({ name: d.name, path: resolve(resolved, d.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { path: resolved, entries };
+}
+
+async function collectRecentCwds() {
+  const sessions = await SessionManager.listAll();
+  const seen = new Map();
+  for (const s of sessions) {
+    if (!s?.cwd) continue;
+    const existing = seen.get(s.cwd);
+    const modified = s.modified instanceof Date ? s.modified.getTime() : Date.parse(s.modified || "") || 0;
+    if (!existing || modified > existing.modified) {
+      seen.set(s.cwd, { cwd: s.cwd, modified, count: (existing?.count || 0) + 1 });
+    } else {
+      existing.count += 1;
+    }
+  }
+  return [...seen.values()].sort((a, b) => b.modified - a.modified);
+}
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
 const sessionDir = process.env.PI_SESSION_DIR;
 
@@ -147,6 +253,15 @@ function serveStatic(req, res) {
 // Built-in slash commands that map cleanly to SDK calls. Commands that require
 // interactive UI (settings, login, model selector, fork picker, etc.) are not
 // here — the client handles them with a "not supported" toast.
+// Slash commands implemented by pi-webui itself (not in pi's BUILTIN list).
+// Surfaced in the client's `/` autocomplete via collectSlashCommands().
+const WEBUI_SLASH_COMMANDS = {
+  cwd: {
+    description: "switch the working directory",
+    argumentHint: "[path]",
+  },
+};
+
 const SLASH_HANDLERS = {
   new: async (ctrl) => {
     const result = await ctrl.runtime.newSession();
@@ -396,6 +511,21 @@ const SLASH_HANDLERS = {
       })),
     };
   },
+  cwd: async (ctrl, arg) => {
+    const target = String(arg || "").trim();
+    if (target) {
+      const resolved = validateCwdTarget(target);
+      if (resolved === ctrl.cwd) return { cwd: resolved, unchanged: true };
+      await ctrl.switchCwd(resolved);
+      return { cwd: resolved };
+    }
+    return {
+      needsPicker: "cwd",
+      currentCwd: ctrl.cwd,
+      homeDir: HOME_DIR,
+      cwds: await collectRecentCwds(),
+    };
+  },
   resume: async (ctrl, arg) => {
     const path = String(arg || "").trim();
     if (path) {
@@ -455,6 +585,7 @@ function serializeSessionInfo(info) {
 class NativePiSessionController {
   constructor(ws) {
     this.ws = ws;
+    this.cwd = appCwd;
     this.runtime = undefined;
     this.unsubscribe = undefined;
     this.fileWatcher = undefined;
@@ -463,6 +594,10 @@ class NativePiSessionController {
     this.refreshTimer = undefined;
     this.refreshing = false;
     this.eventLog = createEventLog();
+    this.extUi = createExtUiBridge({
+      send: (msg) => sendJson(this.ws, msg),
+      log: logger,
+    });
     this.ready = this.init().catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(this.ws, { type: "server_error", payload: message });
@@ -472,9 +607,9 @@ class NativePiSessionController {
 
   async init() {
     this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: appCwd,
+      cwd: this.cwd,
       agentDir,
-      sessionManager: SessionManager.create(appCwd, sessionDir),
+      sessionManager: SessionManager.create(this.cwd, sessionDir),
     });
 
     await this.bindSession();
@@ -482,7 +617,7 @@ class NativePiSessionController {
     sendJson(this.ws, {
       type: "connected",
       payload: {
-        appCwd,
+        appCwd: this.cwd,
         agentDir,
         homeDir: process.env.HOME || "",
         diagnostics: this.runtime.diagnostics,
@@ -497,10 +632,26 @@ class NativePiSessionController {
     // always falls through to reset, but the wire protocol is in place).
   }
 
+  async switchCwd(newCwd) {
+    logger.info("switching cwd", { from: this.cwd, to: newCwd });
+    this.stopFileWatch();
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    try { await this.runtime?.dispose(); } catch { /* ignore */ }
+    this.cwd = newCwd;
+    this.runtime = await createAgentSessionRuntime(createRuntime, {
+      cwd: newCwd,
+      agentDir,
+      sessionManager: SessionManager.create(newCwd, sessionDir),
+    });
+    await this.bindSession();
+    await this.sendBootstrap();
+  }
+
   async bindSession() {
     this.unsubscribe?.();
     const session = this.runtime.session;
-    await session.bindExtensions({});
+    await session.bindExtensions({ uiContext: this.extUi.ui });
     this.unsubscribe = session.subscribe((event) => {
       this.onSessionEvent(event);
     });
@@ -730,6 +881,17 @@ class NativePiSessionController {
       source: "builtin",
       supported: SLASH_HANDLERS[c.name] !== undefined,
     }));
+    const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((c) => c.name));
+    for (const [name, meta] of Object.entries(WEBUI_SLASH_COMMANDS)) {
+      if (builtinNames.has(name)) continue;
+      commands.push({
+        name,
+        description: meta.description,
+        source: "webui",
+        supported: SLASH_HANDLERS[name] !== undefined,
+        argumentHint: meta.argumentHint,
+      });
+    }
 
     for (const tpl of this.session.promptTemplates ?? []) {
       commands.push({
@@ -944,6 +1106,18 @@ class NativePiSessionController {
         });
         return;
 
+      case "list_dir": {
+        const reqPath = String(payload.path || "").trim();
+        try {
+          const result = listDirectories(reqPath);
+          sendJson(this.ws, { type: "list_dir_result", payload: { request: reqPath, ...result } });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(this.ws, { type: "list_dir_result", payload: { request: reqPath, error: message } });
+        }
+        return;
+      }
+
       case "slash_command": {
         const name = String(payload.name || "").trim();
         const arg = typeof payload.arg === "string" ? payload.arg : "";
@@ -979,6 +1153,22 @@ class NativePiSessionController {
         return;
       }
 
+      case "ext_ui_response":
+        this.extUi.handleResponse(payload.payload || payload);
+        return;
+
+      case "ext_ui_custom_input":
+        this.extUi.handleCustomInput(payload.payload || payload);
+        return;
+
+      case "ext_ui_custom_resize":
+        this.extUi.handleCustomResize(payload.payload || payload);
+        return;
+
+      case "ext_ui_custom_close":
+        this.extUi.handleCustomClose(payload.payload || payload);
+        return;
+
       default:
         sendJson(this.ws, {
           type: "command_result",
@@ -991,6 +1181,7 @@ class NativePiSessionController {
     try {
       this.stopFileWatch();
       this.unsubscribe?.();
+      this.extUi?.dispose();
       await this.runtime?.dispose();
     } catch {
       // Ignore shutdown errors.

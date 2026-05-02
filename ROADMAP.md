@@ -42,4 +42,10 @@
 [x] static asset vendoring via `make vendor`
 [x] published as `@khimaros/pi-webui` with `pi-webui` bin
 [x] `make pack` and `make publish` targets
+[x] suppress slash popup when navigating input history
+[x] extension UI bridge — `ExtensionUIContext` notify/select/confirm/input rendered as webui modals (proof of concept; custom/widget/header/footer no-op)
+[x] extension UI bridge — `ui.custom()` proxied as ANSI-streamed pi-tui Component overlay with browser key forwarding (covers guardrails path-access + permission-gate)
+[x] `--help` / `-h` cli flag with usage output
+[x] `/cwd` slash command + picker modal to switch the working directory at runtime
+[x] shrink viewport on mobile when virtual keyboard opens (visualViewport)
 ```

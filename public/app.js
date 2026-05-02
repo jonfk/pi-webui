@@ -35,6 +35,8 @@ import { shouldHighlightCodeBlock } from "./highlight.mjs";
 import { planBlockRenders, reconcileChildrenInPlace } from "./render-blocks.mjs";
 import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-follow.mjs";
 import { log as logger } from "./log.mjs";
+import { createCustomOverlayHost } from "./ext-custom.mjs";
+import { routeInput } from "./route-input.mjs";
 
 let socket;
 let currentSessionState = null;
@@ -47,6 +49,21 @@ let slashIndex = 0;
 // session_event with a seq; we send our latest one back on (re)connect via
 // `ready` so the server can replay missed events without a full reset.
 let lastSeq = null;
+
+// Track the visual viewport so the app shell shrinks when the mobile virtual
+// keyboard opens. Without this, `100vh` stays the full screen and the top of
+// the chat log scrolls behind the keyboard.
+function syncAppHeight() {
+  const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${h}px`);
+}
+syncAppHeight();
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", syncAppHeight);
+  window.visualViewport.addEventListener("scroll", syncAppHeight);
+} else {
+  window.addEventListener("resize", syncAppHeight);
+}
 
 function loadStoredSessionFile() {
   try {
@@ -118,6 +135,16 @@ let modalOnSelect = null;
 let modalOnCommit = null;
 let modalMulti = false;
 let modalSelected = new Set();
+// Fires from closeModal() when the modal is dismissed without committing
+// (e.g. Escape, backdrop click). Used by the extension UI bridge to send
+// a cancellation back to the server.
+let modalOnClose = null;
+// Hooks used by dynamic pickers (currently the cwd picker) to take over
+// the modal search input/Enter/Tab without rewriting the modal infra.
+let modalInputOverride = null;
+let modalCommitOverride = null;
+let modalTabHandler = null;
+let cwdPickerState = null;
 
 function escapeHtml(text) {
   return String(text)
@@ -651,6 +678,9 @@ function connect() {
         if (typeof packet.seq === "number") lastSeq = packet.seq;
         handleSessionEvent(packet.payload);
         return;
+      case "list_dir_result":
+        handleListDirResult(packet.payload);
+        return;
       case "command_result":
         if (!packet.payload.ok) {
           const msg = packet.payload.error || `${packet.payload.command} failed`;
@@ -672,6 +702,27 @@ function connect() {
         showToast(packet.payload, "error");
         csSetError(chatState, String(packet.payload));
         renderStatusBar();
+        return;
+      case "ext_ui_request":
+        handleExtUiRequest(packet.payload);
+        return;
+      case "ext_ui_notify":
+        showToast(packet.payload?.message || "", packet.payload?.type || "info");
+        return;
+      case "ext_ui_title":
+        if (packet.payload?.title) document.title = String(packet.payload.title);
+        return;
+      case "ext_ui_cancel":
+        if (activeExtUiRequestId === packet.payload?.id) closeModal();
+        return;
+      case "ext_ui_custom_open":
+        customOverlay.open(packet.payload || {});
+        return;
+      case "ext_ui_custom_update":
+        customOverlay.update(packet.payload || {});
+        return;
+      case "ext_ui_custom_close":
+        customOverlay.close(packet.payload || {});
         return;
       default:
         return;
@@ -713,9 +764,12 @@ function openModal(items, opts = {}) {
 }
 
 function closeModal() {
+  const onClose = modalOnClose;
+  modalOnClose = null;
   modal.hidden = true;
   modalDialog.classList.remove("text-mode");
   modalDialog.classList.remove("prompt-mode");
+  modalDialog.classList.remove("confirm-mode");
   modalTitle.textContent = "";
   modalItems = [];
   modalFiltered = [];
@@ -723,10 +777,19 @@ function closeModal() {
   modalOnCommit = null;
   modalMulti = false;
   modalSelected = new Set();
+  modalInputOverride = null;
+  modalCommitOverride = null;
+  modalTabHandler = null;
+  cwdPickerState = null;
   input.focus();
+  onClose?.();
 }
 
 function filterModal() {
+  if (modalInputOverride) {
+    modalInputOverride(modalSearch.value);
+    return;
+  }
   const q = modalSearch.value.trim().toLowerCase();
   modalFiltered = q
     ? modalItems.filter((it) => it.search.toLowerCase().includes(q))
@@ -781,6 +844,10 @@ function toggleSelected() {
 }
 
 function commitModal() {
+  if (modalCommitOverride) {
+    modalCommitOverride();
+    return;
+  }
   if (modalMulti) {
     const cb = modalOnCommit;
     const selected = [...modalSelected];
@@ -834,6 +901,14 @@ modalSearch.addEventListener("keydown", (event) => {
   }
 });
 
+modalSearch.addEventListener("keydown", (event) => {
+  if (event.key === "Tab" && modalTabHandler) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    modalTabHandler(event.shiftKey);
+  }
+});
+
 modal.addEventListener("click", (event) => {
   if (event.target === modal) {
     closeModal();
@@ -878,7 +953,7 @@ function showSessionPicker(payload) {
       html: `
         <div>
           <div class="session-title">${escapeHtml(title)}</div>
-          <div class="session-cwd">${escapeHtml(s.cwd || "")}</div>
+          <div class="session-cwd">${escapeHtml(displayPath(s.cwd || ""))}</div>
         </div>
         <div class="session-meta">${escapeHtml(time)} · ${escapeHtml(String(s.messageCount ?? 0))} msg</div>
       `,
@@ -1030,6 +1105,102 @@ function showTextModal(title, body) {
   modalDialog.focus();
 }
 
+const customOverlay = createCustomOverlayHost({
+  root: document.body,
+  send: (msg) => send(msg),
+});
+
+// Tracks the currently-displayed extension UI request so the server can
+// cancel it (via ext_ui_cancel) and so closeModal-without-commit can send a
+// cancellation response automatically.
+let activeExtUiRequestId = null;
+
+function handleExtUiRequest(payload) {
+  if (!payload || !payload.id) return;
+  const id = payload.id;
+  let settled = false;
+  const reply = (value) => {
+    if (settled) return;
+    settled = true;
+    if (activeExtUiRequestId === id) activeExtUiRequestId = null;
+    send({ type: "ext_ui_response", payload: { id, value } });
+  };
+  // If the modal closes for any reason without a commit (Escape, click-out),
+  // resolve the request as cancelled with the kind-appropriate "no answer".
+  const cancelValue = payload.kind === "confirm" ? false : undefined;
+  modalOnClose = () => reply(cancelValue);
+  activeExtUiRequestId = id;
+
+  switch (payload.kind) {
+    case "notify":
+      showToast(payload.message || "", payload.type || "info");
+      reply(undefined);
+      modalOnClose = null;
+      activeExtUiRequestId = null;
+      return;
+    case "confirm":
+      showConfirmModal(payload.title || "", payload.message || "", (yes) => reply(!!yes));
+      return;
+    case "input":
+      showPromptModal(payload.title || "", payload.placeholder || "", (value) => reply(value));
+      return;
+    case "select": {
+      const items = (payload.options || []).map((opt) => ({
+        target: opt,
+        search: opt,
+        html: escapeHtml(opt),
+      }));
+      modalTitle.textContent = payload.title || "";
+      openModal(items, (item) => reply(item?.target));
+      return;
+    }
+    default:
+      reply(undefined);
+  }
+}
+
+function showConfirmModal(title, message, onResult) {
+  modalDialog.classList.add("confirm-mode");
+  modalTitle.textContent = title || "";
+  modalBody.innerHTML = "";
+  const msg = document.createElement("div");
+  msg.className = "modal-confirm-message";
+  msg.textContent = message || "";
+  const buttons = document.createElement("div");
+  buttons.className = "modal-confirm-buttons";
+  const yes = document.createElement("button");
+  yes.type = "button";
+  yes.className = "modal-confirm-yes";
+  yes.textContent = "Confirm";
+  const no = document.createElement("button");
+  no.type = "button";
+  no.className = "modal-confirm-no";
+  no.textContent = "Cancel";
+  buttons.append(no, yes);
+  modalBody.append(msg, buttons);
+  modal.hidden = false;
+  yes.focus();
+  const finish = (value) => {
+    closeModal();
+    onResult?.(value);
+  };
+  yes.addEventListener("click", () => finish(true));
+  no.addEventListener("click", () => finish(false));
+  modalDialog.tabIndex = -1;
+  modalDialog.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      finish(document.activeElement === no ? false : true);
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "Tab") {
+      event.preventDefault();
+      (document.activeElement === yes ? no : yes).focus();
+    }
+  });
+}
+
 function showPromptModal(title, initialValue, onSubmit) {
   modalDialog.classList.add("prompt-mode");
   modalTitle.textContent = title || "";
@@ -1090,6 +1261,201 @@ async function handleSlashResult(data) {
   if (data.needsPicker === "tree") return showTreePicker(data);
   if (data.needsPicker === "scoped-models") return showScopedModelsPicker(data);
   if (data.needsPicker === "logout") return showLogoutPicker(data);
+  if (data.needsPicker === "cwd") return showCwdPicker(data);
+  if (typeof data.cwd === "string" && data.cwd) {
+    if (data.unchanged) showToast(`cwd already ${displayPath(data.cwd)}`, "info");
+    else showToast(`cwd → ${displayPath(data.cwd)}`, "info");
+    return;
+  }
+}
+
+function submitCwd(target) {
+  const arg = String(target || "").trim();
+  if (!arg) return;
+  send({ type: "slash_command", name: "cwd", arg });
+}
+
+function expandTildeClient(p, home) {
+  if (!p || !home) return p;
+  if (p === "~") return home;
+  if (p.startsWith("~/")) return home + "/" + p.slice(2);
+  return p;
+}
+
+function splitCwdInput(value, home) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const expanded = expandTildeClient(trimmed, home);
+  if (!expanded.startsWith("/")) return null;
+  const lastSlash = expanded.lastIndexOf("/");
+  const parent = lastSlash === 0 ? "/" : expanded.slice(0, lastSlash);
+  const basename = expanded.slice(lastSlash + 1);
+  return { parent, basename };
+}
+
+function recentCwdItem(c, currentCwd) {
+  const time = formatRelativeTime(new Date(c.modified).toISOString());
+  const pretty = displayPath(c.cwd);
+  return {
+    target: c.cwd,
+    current: c.cwd === currentCwd,
+    search: `${pretty} ${c.cwd}`,
+    html: `
+      <div>
+        <div class="session-title">${escapeHtml(pretty)}</div>
+        <div class="session-cwd">${escapeHtml(c.cwd)}</div>
+      </div>
+      <div class="session-meta">${escapeHtml(time)} · ${escapeHtml(String(c.count))} session${c.count === 1 ? "" : "s"}</div>
+    `,
+  };
+}
+
+function dirEntryItem(entry, current) {
+  const pretty = displayPath(entry.path);
+  return {
+    target: entry.path,
+    current: entry.path === current,
+    search: `${entry.name} ${entry.path}`,
+    html: `
+      <div>
+        <div class="session-title">${escapeHtml(entry.name)}/</div>
+        <div class="session-cwd">${escapeHtml(pretty)}</div>
+      </div>
+    `,
+  };
+}
+
+function renderCwdRecents() {
+  if (!cwdPickerState) return;
+  const items = cwdPickerState.recents.map((c) => recentCwdItem(c, cwdPickerState.currentCwd));
+  modalItems = items;
+  modalFiltered = items;
+  modalIndex = 0;
+  renderModal();
+}
+
+function renderCwdListing(parentPath, entries, basenameFilter) {
+  if (!cwdPickerState) return;
+  const lower = (basenameFilter || "").toLowerCase();
+  const filtered = lower
+    ? entries.filter((e) => e.name.toLowerCase().startsWith(lower))
+    : entries.slice();
+  const items = filtered.map((e) => dirEntryItem(e, cwdPickerState.currentCwd));
+  modalItems = items;
+  modalFiltered = items;
+  modalIndex = 0;
+  if (items.length === 0) {
+    modalBody.innerHTML = `<div class="modal-empty">${escapeHtml(`no subdirectories in ${displayPath(parentPath)}`)}</div>`;
+    return;
+  }
+  renderModal();
+}
+
+function requestCwdListing(path) {
+  if (!cwdPickerState) return;
+  if (cwdPickerState.pending === path) return;
+  cwdPickerState.pending = path;
+  send({ type: "list_dir", path });
+}
+
+function onCwdInput(value) {
+  if (!cwdPickerState) return;
+  const split = splitCwdInput(value, cwdPickerState.homeDir);
+  if (!split) {
+    // text doesn't look like a path — filter the recents list as a fallback.
+    const lower = value.trim().toLowerCase();
+    const recents = cwdPickerState.recents.map((c) => recentCwdItem(c, cwdPickerState.currentCwd));
+    modalItems = recents;
+    modalFiltered = lower ? recents.filter((it) => it.search.toLowerCase().includes(lower)) : recents;
+    modalIndex = 0;
+    renderModal();
+    return;
+  }
+  const cached = cwdPickerState.listings.get(split.parent);
+  if (cached) {
+    if (cached.error) {
+      modalItems = [];
+      modalFiltered = [];
+      modalBody.innerHTML = `<div class="modal-empty">${escapeHtml(cached.error)}</div>`;
+      return;
+    }
+    renderCwdListing(split.parent, cached.entries, split.basename);
+    return;
+  }
+  modalItems = [];
+  modalFiltered = [];
+  modalBody.innerHTML = `<div class="modal-empty">loading ${escapeHtml(displayPath(split.parent))}…</div>`;
+  requestCwdListing(split.parent);
+}
+
+function commitCwdSelection() {
+  if (!cwdPickerState) return;
+  const selected = modalFiltered[modalIndex];
+  const text = modalSearch.value.trim();
+  let target;
+  if (selected && selected.target) {
+    // If user has typed a path, prefer their explicit text over the highlighted
+    // listing entry — matches shell-style "press Enter to use what I typed".
+    if (text && (text.startsWith("/") || text.startsWith("~"))) target = text;
+    else target = selected.target;
+  } else {
+    target = text;
+  }
+  if (!target) return;
+  closeModal();
+  submitCwd(target);
+}
+
+function completeCwdTab() {
+  if (!cwdPickerState) return;
+  const selected = modalFiltered[modalIndex];
+  if (!selected || !selected.target) return;
+  // Show the picked path in tilde form when applicable, with a trailing slash
+  // so the next keystroke or Tab descends into it.
+  const home = cwdPickerState.homeDir;
+  const display = home && (selected.target === home || selected.target.startsWith(home + "/"))
+    ? "~" + selected.target.slice(home.length)
+    : selected.target;
+  modalSearch.value = display + "/";
+  onCwdInput(modalSearch.value);
+}
+
+function handleListDirResult(payload) {
+  if (!cwdPickerState || !payload) return;
+  const requestedParent = payload.path || payload.request;
+  if (!requestedParent) return;
+  if (payload.error) {
+    cwdPickerState.listings.set(requestedParent, { error: payload.error });
+  } else {
+    cwdPickerState.listings.set(requestedParent, { entries: payload.entries || [] });
+  }
+  if (cwdPickerState.pending === requestedParent) cwdPickerState.pending = null;
+  // Re-derive from the live input so we render the current basename filter,
+  // not whatever the user typed when we kicked off the request.
+  onCwdInput(modalSearch.value);
+}
+
+function showCwdPicker(payload) {
+  cwdPickerState = {
+    homeDir: payload.homeDir || homeDir || "",
+    currentCwd: payload.currentCwd || "",
+    recents: payload.cwds || [],
+    listings: new Map(),
+    pending: null,
+  };
+  modalItems = cwdPickerState.recents.map((c) => recentCwdItem(c, cwdPickerState.currentCwd));
+  modalFiltered = modalItems.slice();
+  modalIndex = 0;
+  modalSearch.value = "";
+  modalInputOverride = onCwdInput;
+  modalCommitOverride = commitCwdSelection;
+  modalTabHandler = completeCwdTab;
+  modalOnSelect = (item) => {
+    if (item?.target) submitCwd(item.target);
+  };
+  modal.hidden = false;
+  renderModal();
+  modalSearch.focus();
 }
 
 function showLogoutPicker(payload) {
@@ -1173,6 +1539,14 @@ function updateSlashMenu() {
   renderSlashMenu();
 }
 
+// history navigation may restore an entry that begins with "/", but we don't
+// want that to pop the slash command menu — only typing a "/" should.
+function hideSlashMenuForHistory() {
+  slashFiltered = [];
+  slashIndex = 0;
+  slashMenu.hidden = true;
+}
+
 function applySlashSelection() {
   const cmd = slashFiltered[slashIndex];
   if (!cmd) return;
@@ -1243,7 +1617,7 @@ input.addEventListener("keydown", (event) => {
     input.value = inputHistory[inputHistoryIndex] ?? "";
     resizeInput();
     input.setSelectionRange(0, 0);
-    updateSlashMenu();
+    hideSlashMenuForHistory();
     return;
   }
   if (event.key === "ArrowDown" && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
@@ -1256,7 +1630,7 @@ input.addEventListener("keydown", (event) => {
     resizeInput();
     const end = input.value.length;
     input.setSelectionRange(end, end);
-    updateSlashMenu();
+    hideSlashMenuForHistory();
     return;
   }
 });
@@ -1412,11 +1786,12 @@ composer.addEventListener("submit", (event) => {
   input.style.height = "36px";
   slashMenu.hidden = true;
 
-  if (bashMode) {
-    setBashMode(false);
-    logger.info("bash sent", { length: message.length });
-    appendOptimisticUserMessage(`!${message}`);
-    send({ type: "bash", command: message });
+  const route = routeInput({ message, bashMode });
+  if (route.kind === "empty") return;
+  if (route.kind === "bash") {
+    if (bashMode) setBashMode(false);
+    logger.info("bash sent", { length: route.command.length });
+    send({ type: "bash", command: route.command });
     return;
   }
 

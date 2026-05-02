@@ -3,6 +3,10 @@
 a native web app for [pi](https://pi.dev), backed by the pi sdk runtime
 and your existing persisted pi sessions.
 
+<video src="https://github.com/khimaros/pi-webui/raw/master/docs/screencast.mp4" controls width="720"></video>
+
+(if the video doesn't play inline, [download it here](docs/screencast.mp4).)
+
 ## getting started
 
 prerequisites:
@@ -11,7 +15,7 @@ prerequisites:
 - a working pi install with config/auth on this machine
   (`~/.pi/agent` by default)
 
-run without installing (latest published is `@khimaros/pi-webui` v0.2.0):
+run without installing:
 
 ```bash
 npx @khimaros/pi-webui
@@ -51,6 +55,7 @@ environment variables:
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | pi default | session storage directory |
+| `PI_CWD_ALLOW_ANY` | `0` | allow `/cwd` to switch to paths outside `$HOME` |
 
 examples:
 

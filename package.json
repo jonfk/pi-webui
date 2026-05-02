@@ -19,6 +19,7 @@
   "files": [
     "server.mjs",
     "server-event-log.mjs",
+    "server-ext-ui.mjs",
     "server-log.mjs",
     "server-watch.mjs",
     "public",
