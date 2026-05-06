@@ -46,6 +46,26 @@ test("submit shows user message immediately", () => {
   assert.ok(hasUserMessage(selectItems(s), "hi"), "user message should be visible after submit");
 });
 
+test("submitUser includes pasted image blocks in pendingUser", () => {
+  const s = createChatState();
+  submitUser(s, "look at this", [{ data: "AAAA", mimeType: "image/png" }]);
+  const blocks = s.pendingUser.blocks;
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0].type, "text");
+  assert.equal(blocks[1].type, "image");
+  assert.equal(blocks[1].data, "AAAA");
+  assert.equal(blocks[1].mimeType, "image/png");
+});
+
+test("image-only pendingUser clears once canonical contains a matching user message", () => {
+  const s = createChatState();
+  submitUser(s, "", [{ data: "AAAA", mimeType: "image/png" }]);
+  setHistory(s, [
+    { role: "user", content: [{ type: "image", mimeType: "image/png", data: "AAAA" }] },
+  ]);
+  assert.equal(s.pendingUser, null, "pendingUser should clear once server echoes the turn");
+});
+
 test("user message stays visible after agent_start snapshot that does not yet include it", () => {
   const s = createChatState();
   submitUser(s, "hi");

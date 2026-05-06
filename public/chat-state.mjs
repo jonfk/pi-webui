@@ -39,12 +39,15 @@ export function clearError(state) {
   state.lastError = null;
 }
 
-export function submitUser(state, text) {
-  state.pendingUser = {
-    kind: "user",
-    title: "You",
-    blocks: [{ type: "text", text }],
-  };
+export function submitUser(state, text, images) {
+  const blocks = [];
+  if (text) blocks.push({ type: "text", text });
+  if (Array.isArray(images)) {
+    for (const img of images) {
+      if (img && img.data) blocks.push({ type: "image", mimeType: img.mimeType, data: img.data });
+    }
+  }
+  state.pendingUser = { kind: "user", title: "You", blocks };
   state.showTyping = true;
   state.isRunning = true;
   resetLiveAssistant(state);
@@ -57,11 +60,33 @@ export function submitUser(state, text) {
 // duplicates. Use resetHistory for cold start / session switch / replay miss.
 export function setHistory(state, messages) {
   state.canonical = Array.isArray(messages) ? messages.slice() : [];
-  const pendingText = state.pendingUser?.blocks?.[0]?.text ?? null;
-  if (pendingText !== null && lastUserText(state.canonical) === pendingText) {
-    state.pendingUser = null;
+  if (state.pendingUser) {
+    const pendingTextBlock = state.pendingUser.blocks.find((b) => b.type === "text");
+    const pendingText = pendingTextBlock ? pendingTextBlock.text : "";
+    const pendingHasImage = state.pendingUser.blocks.some((b) => b.type === "image");
+    const lastUser = lastUserMessage(state.canonical);
+    if (lastUser && (lastUserText(state.canonical) ?? "") === pendingText) {
+      // an image-only pending user matches if canonical's last user has any
+      // image block too — text alone may be empty in both, so the image
+      // presence acts as the signal that the server received our turn.
+      if (!pendingHasImage || lastUserHasImage(lastUser)) {
+        state.pendingUser = null;
+      }
+    }
   }
   if (!state.isRunning) state.showTyping = false;
+}
+
+function lastUserMessage(canonical) {
+  for (let i = canonical.length - 1; i >= 0; i--) {
+    if (canonical[i]?.role === "user") return canonical[i];
+  }
+  return null;
+}
+
+function lastUserHasImage(message) {
+  if (!Array.isArray(message?.content)) return false;
+  return message.content.some((c) => c && c.type === "image");
 }
 
 // Authoritative snapshot. Throws away any streamed UI state — used on

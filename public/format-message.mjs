@@ -13,7 +13,7 @@ export function sdkContentToBlocks(content) {
       case "thinking":
         return { type: "thinking", text: b.thinking || "" };
       case "image":
-        return { type: "image", mimeType: b.mimeType };
+        return { type: "image", mimeType: b.mimeType, data: b.data };
       case "toolCall":
         return { type: "tool_call", name: b.name, input: b.arguments };
       case "toolResult":

@@ -8,7 +8,6 @@
 [ ] prompt/template and skill launcher
 [ ] richer rendering for thinking and tool calls
 [ ] multi-user runtime isolation
-[ ] attachment upload support
 ```
 
 ## done
@@ -48,4 +47,5 @@
 [x] `--help` / `-h` cli flag with usage output
 [x] `/cwd` slash command + picker modal to switch the working directory at runtime
 [x] shrink viewport on mobile when virtual keyboard opens (visualViewport)
+[x] paste or drag/drop images into the composer as attachments
 ```

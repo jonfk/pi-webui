@@ -85,6 +85,13 @@ function saveStoredSessionFile(file) {
 
 const INPUT_HISTORY_KEY = "pi-webui:input-history";
 const INPUT_HISTORY_LIMIT = 200;
+
+// matches server.mjs sanitizePromptImages — keep in sync
+const MAX_PASTED_IMAGES = 8;
+const MAX_PASTED_IMAGE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_PASTED_IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/i;
+// in-memory list of images attached to the next prompt: {data, mimeType, url}
+const pendingImages = [];
 let inputHistory = loadInputHistory();
 let inputHistoryIndex = inputHistory.length;
 let inputHistoryDraft = "";
@@ -332,9 +339,15 @@ function renderBlocksHtml(blocks) {
       case "tool_result":
         parts.push(renderToolResultBlockHtml(b.name, b.result));
         break;
-      case "image":
-        parts.push(escapeHtml(`[image ${b.mimeType || ""}]`));
+      case "image": {
+        const mime = b.mimeType || "image/png";
+        if (b.data) {
+          parts.push(`<img class="message-image" alt="image" src="data:${escapeHtml(mime)};base64,${escapeHtml(b.data)}" />`);
+        } else {
+          parts.push(escapeHtml(`[image ${mime}]`));
+        }
         break;
+      }
       default:
         parts.push(`<pre><code class="language-json">${escapeHtml(JSON.stringify(b, null, 2))}</code></pre>`);
     }
@@ -1771,6 +1784,113 @@ function refocusInputIfIdle() {
   input.focus();
 }
 
+// renders the chip strip above the composer reflecting `pendingImages`.
+const attachmentsBar = document.getElementById("composer-attachments");
+function renderAttachments() {
+  attachmentsBar.replaceChildren();
+  attachmentsBar.hidden = pendingImages.length === 0;
+  pendingImages.forEach((img, i) => {
+    const chip = document.createElement("div");
+    chip.className = "attachment-chip";
+    const thumb = document.createElement("img");
+    thumb.src = img.url;
+    thumb.alt = "pasted image";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "attachment-remove";
+    remove.setAttribute("aria-label", "Remove attachment");
+    remove.textContent = "×";
+    remove.addEventListener("click", () => {
+      pendingImages.splice(i, 1);
+      renderAttachments();
+    });
+    chip.append(thumb, remove);
+    attachmentsBar.append(chip);
+  });
+}
+
+// converts an ArrayBuffer to a base64 string without using FileReader so the
+// callback flow stays in this paste handler.
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+// shared by paste and drag/drop: appends valid image files to `pendingImages`,
+// surfaces a toast for any rejection, and re-renders the chip strip.
+async function ingestImageFiles(files) {
+  if (!files || files.length === 0) return;
+  for (const file of files) {
+    if (pendingImages.length >= MAX_PASTED_IMAGES) {
+      showToast(`max ${MAX_PASTED_IMAGES} attachments`, "warning");
+      break;
+    }
+    if (!ALLOWED_PASTED_IMAGE_MIME.test(file.type)) {
+      showToast(`unsupported image type: ${file.type || "unknown"}`, "warning");
+      continue;
+    }
+    if (file.size > MAX_PASTED_IMAGE_BYTES) {
+      showToast("image too large (10 MB max)", "warning");
+      continue;
+    }
+    const buf = await file.arrayBuffer();
+    const data = arrayBufferToBase64(buf);
+    pendingImages.push({
+      data,
+      mimeType: file.type,
+      url: `data:${file.type};base64,${data}`,
+    });
+  }
+  renderAttachments();
+}
+
+input.addEventListener("paste", (event) => {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  const files = [];
+  for (const item of items) {
+    if (item.kind === "file" && ALLOWED_PASTED_IMAGE_MIME.test(item.type)) {
+      const f = item.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length === 0) return; // let normal text paste through
+  event.preventDefault();
+  void ingestImageFiles(files);
+});
+
+// drag and drop: accept image files dropped anywhere in the document. the
+// dragover handler must call preventDefault for the drop to register at all.
+// a body-level class lets the composer highlight while a drag is active.
+let dragDepth = 0;
+window.addEventListener("dragenter", (event) => {
+  if (!event.dataTransfer?.types?.includes("Files")) return;
+  dragDepth += 1;
+  document.body.classList.add("drag-active");
+});
+window.addEventListener("dragleave", () => {
+  if (dragDepth > 0) dragDepth -= 1;
+  if (dragDepth === 0) document.body.classList.remove("drag-active");
+});
+window.addEventListener("dragover", (event) => {
+  if (!event.dataTransfer?.types?.includes("Files")) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+});
+window.addEventListener("drop", (event) => {
+  dragDepth = 0;
+  document.body.classList.remove("drag-active");
+  const files = event.dataTransfer?.files;
+  if (!files || files.length === 0) return;
+  event.preventDefault();
+  void ingestImageFiles(Array.from(files));
+});
+
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
   if (chatState.isRunning) {
@@ -1780,44 +1900,52 @@ composer.addEventListener("submit", (event) => {
   }
   const raw = input.value;
   const message = raw.trim();
-  if (!message || socket?.readyState !== WebSocket.OPEN) return;
-  pushInputHistory(message);
+  const hasImages = pendingImages.length > 0;
+  if ((!message && !hasImages) || socket?.readyState !== WebSocket.OPEN) return;
+  if (message) pushInputHistory(message);
   inputHistoryDraft = "";
   input.value = "";
   input.style.height = "36px";
   slashMenu.hidden = true;
 
-  const route = routeInput({ message, bashMode });
-  if (route.kind === "empty") return;
-  if (route.kind === "bash") {
-    if (bashMode) setBashMode(false);
-    logger.info("bash sent", { length: route.command.length });
-    send({ type: "bash", command: route.command });
-    return;
-  }
-
-  const slash = parseSlash(message);
-  if (slash) {
-    if (slash.name === "name" && !slash.arg.trim()) {
-      const current = currentSessionState?.sessionName || "";
-      showPromptModal("Session name", current, (value) => {
-        logger.info("slash sent", { name: "name" });
-        send({ type: "slash_command", name: "name", arg: value });
-      });
+  // bash/slash routing applies only when there are no pasted attachments —
+  // images can only be carried by a regular prompt message.
+  if (!hasImages) {
+    const route = routeInput({ message, bashMode });
+    if (route.kind === "empty") return;
+    if (route.kind === "bash") {
+      if (bashMode) setBashMode(false);
+      logger.info("bash sent", { length: route.command.length });
+      send({ type: "bash", command: route.command });
       return;
     }
-    logger.info("slash sent", { name: slash.name, hasArg: slash.arg.length > 0 });
-    send({ type: "slash_command", name: slash.name, arg: slash.arg });
-    return;
+
+    const slash = parseSlash(message);
+    if (slash) {
+      if (slash.name === "name" && !slash.arg.trim()) {
+        const current = currentSessionState?.sessionName || "";
+        showPromptModal("Session name", current, (value) => {
+          logger.info("slash sent", { name: "name" });
+          send({ type: "slash_command", name: "name", arg: value });
+        });
+        return;
+      }
+      logger.info("slash sent", { name: slash.name, hasArg: slash.arg.length > 0 });
+      send({ type: "slash_command", name: slash.name, arg: slash.arg });
+      return;
+    }
   }
 
-  logger.info("prompt sent", { length: message.length });
-  appendOptimisticUserMessage(message);
-  send({ type: "prompt", message });
+  const images = pendingImages.map((img) => ({ data: img.data, mimeType: img.mimeType }));
+  pendingImages.length = 0;
+  renderAttachments();
+  logger.info("prompt sent", { length: message.length, images: images.length });
+  appendOptimisticUserMessage(message, images);
+  send({ type: "prompt", message, images });
 });
 
-function appendOptimisticUserMessage(text) {
-  csSubmitUser(chatState, text);
+function appendOptimisticUserMessage(text, images) {
+  csSubmitUser(chatState, text, images);
   renderLog();
 }
 

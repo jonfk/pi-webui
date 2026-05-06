@@ -75,6 +75,13 @@ pi-webui --listen 0.0.0.0:3000
 HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
 ```
 
+## attachments
+
+paste images into the composer (Ctrl/Cmd+V) or drag and drop them onto the
+window. thumbnails appear above the input and ride along with the next
+prompt. up to 8 images per turn, 10 MB each. PNG, JPEG, GIF, and WebP are
+accepted.
+
 ## roadmap
 
 see [ROADMAP.md](ROADMAP.md) for implemented and planned features.

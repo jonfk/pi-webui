@@ -41,6 +41,29 @@ import { createExtUiBridge } from "./server-ext-ui.mjs";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
 
+// limits for client-supplied image attachments on prompt messages
+const MAX_PROMPT_IMAGES = 8;
+const MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME = /^image\/(png|jpeg|gif|webp)$/i;
+
+// validate/normalize an array of {data, mimeType} from the client into the
+// ImageContent shape expected by session.prompt(). drops anything malformed
+// rather than failing the whole prompt — paste UX should be lenient.
+function sanitizePromptImages(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (out.length >= MAX_PROMPT_IMAGES) break;
+    if (!item || typeof item !== "object") continue;
+    const mimeType = String(item.mimeType || "");
+    const data = String(item.data || "");
+    if (!ALLOWED_IMAGE_MIME.test(mimeType)) continue;
+    if (!data || data.length > Math.ceil(MAX_PROMPT_IMAGE_BYTES * 4 / 3)) continue;
+    out.push({ type: "image", data, mimeType });
+  }
+  return out;
+}
+
 // parses "host:port", ":port", or "port"; ipv6 hosts must be bracketed: "[::1]:8787"
 function parseListen(spec) {
   const s = String(spec).trim();
@@ -1005,7 +1028,8 @@ class NativePiSessionController {
 
       case "prompt": {
         const message = String(payload.message || "").trim();
-        if (!message) {
+        const images = sanitizePromptImages(payload.images);
+        if (!message && images.length === 0) {
           sendJson(this.ws, {
             type: "command_result",
             payload: { command: "prompt", ok: false, error: "Message cannot be empty" },
@@ -1016,11 +1040,13 @@ class NativePiSessionController {
         const streamingBehavior = this.session.isStreaming ? payload.streamingBehavior || "followUp" : undefined;
         logger.info("prompt accepted", {
           length: message.length,
+          images: images.length,
           streaming: this.session.isStreaming,
           streamingBehavior,
         });
         void this.runCommand("prompt", async () => {
           await this.session.prompt(message, {
+            images: images.length ? images : undefined,
             streamingBehavior,
             preflightResult: (success) => {
               if (!success) logger.warn("prompt preflight rejected");

@@ -25,6 +25,18 @@ test("toolResult message preserves details (e.g. edit-tool diff)", () => {
   });
 });
 
+test("sdkContentToBlocks preserves base64 data on image blocks", () => {
+  // Pasted images flow through chat-state and back as canonical user messages;
+  // the renderer needs `data` to draw an <img> rather than a placeholder.
+  const blocks = sdkContentToBlocks([
+    { type: "image", mimeType: "image/png", data: "AAAA" },
+  ]);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].type, "image");
+  assert.equal(blocks[0].mimeType, "image/png");
+  assert.equal(blocks[0].data, "AAAA");
+});
+
 test("sdkContentToBlocks preserves details on embedded toolResult blocks", () => {
   // Some transports emit toolResult as a block inside an assistant message's
   // content array rather than as a top-level message.
