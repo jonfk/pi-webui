@@ -15,33 +15,34 @@
   "bugs": {
     "url": "https://github.com/khimaros/pi-webui/issues"
   },
-  "main": "server.mjs",
+  "main": "dist/server/index.js",
   "bin": {
-    "pi-webui": "server.mjs"
+    "pi-webui": "dist/server/index.js"
+  },
+  "pi": {
+    "extensions": ["dist/extension/index.js"]
   },
   "files": [
-    "server.mjs",
-    "server-event-log.mjs",
-    "server-ext-ui.mjs",
-    "server-log.mjs",
-    "server-watch.mjs",
+    "dist",
     "public",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "dev": "node --watch server.mjs",
-    "start": "node server.mjs",
-    "test": "node --test test/*.test.mjs"
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/server/index.js', 0o755)\"",
+    "start": "node dist/server/index.js",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.70.2",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
     "ws": "^8.18.3"
   },
-  "pi": {
-    "extensions": ["./extensions"]
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "@types/ws": "^8.18.1",
+    "typescript": "^6.0.3"
   }
 }

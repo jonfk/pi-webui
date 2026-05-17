@@ -13,13 +13,15 @@ HLJS_BASE         := https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@$(HLJS
 
 CURL              := curl -fsSL
 
-JS_SOURCES        := $(shell find . -name node_modules -prune -o \( -name '*.mjs' -o -name '*.js' \) -not -path './public/vendor/*' -print)
+TS_SOURCES        := $(shell find src -name '*.ts' 2>/dev/null)
+JS_SOURCES        := $(shell find public test -name '*.mjs' -not -path './public/vendor/*' 2>/dev/null)
 
-.PHONY: build lint test precommit start start-dev install update vendor vendor-clean pack publish
+.PHONY: build lint test precommit start install update vendor vendor-clean pack publish clean
 
 .DEFAULT_GOAL := build
 
 build: node_modules
+	@npm run build
 
 node_modules: package.json package-lock.json
 	@npm install
@@ -27,33 +29,34 @@ node_modules: package.json package-lock.json
 
 lint: node_modules
 	@echo "==> lint"
+	@npx tsc --noEmit
 	@for f in $(JS_SOURCES); do node --check $$f || exit 1; done
 
-test: node_modules
+test: build
 	@echo "==> test"
-	@npm test
+	@node --test test/*.test.mjs
 
 precommit: lint test
 
-start: node_modules
+start: build
 	@npm start
-
-start-dev: node_modules
-	@npm run dev
 
 install:
 	@npm install -g .
 
-pack: node_modules
+pack: build
 	@mkdir -p build
 	@npm pack --pack-destination build
 
-publish: node_modules
+publish: build
 	@npm publish --access public
 
 update:
 	@npm update
 	@touch node_modules
+
+clean:
+	@rm -rf dist build
 
 
 vendor: vendor-clean

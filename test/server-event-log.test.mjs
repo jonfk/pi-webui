@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createEventLog } from "../server-event-log.mjs";
+import { createEventLog } from "../dist/server/event-log.js";
 
 test("append assigns monotonic, gap-free seq starting at 1", () => {
   const log = createEventLog();

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// @ts-nocheck
 import { createServer } from "node:http";
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch } from "node:fs";
 import { extname, dirname, isAbsolute, join, resolve } from "node:path";
@@ -10,12 +11,12 @@ import {
   createAgentSessionServices,
   getAgentDir,
   SessionManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 // The package's `exports` field doesn't expose the slash-commands list.
 // Resolve the package's `import` entry via import.meta.resolve and load the
 // sibling file by URL — dynamic file-URL imports bypass exports validation.
-const piIndexUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
+const piIndexUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
 const piDistDir = dirname(fileURLToPath(piIndexUrl));
 const { BUILTIN_SLASH_COMMANDS } = await import(
   pathToFileURL(resolve(piDistDir, "core/slash-commands.js")).href
@@ -33,13 +34,13 @@ import {
   EXTERNAL_REFRESH_DEBOUNCE_MS,
   isSelfEcho,
   canRefreshNow,
-} from "./server-watch.mjs";
-import { createEventLog } from "./server-event-log.mjs";
-import { log as logger } from "./server-log.mjs";
-import { createExtUiBridge } from "./server-ext-ui.mjs";
+} from "./watch.js";
+import { createEventLog } from "./event-log.js";
+import { log as logger } from "./log.js";
+import { createExtUiBridge } from "./ext-ui.js";
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 8787;
+const DEFAULT_PORT = 4096;
 
 // limits for client-supplied image attachments on prompt messages
 const MAX_PROMPT_IMAGES = 8;
@@ -64,7 +65,7 @@ function sanitizePromptImages(raw) {
   return out;
 }
 
-// parses "host:port", ":port", or "port"; ipv6 hosts must be bracketed: "[::1]:8787"
+// parses "host:port", ":port", or "port"; ipv6 hosts must be bracketed: "[::1]:4096"
 function parseListen(spec) {
   const s = String(spec).trim();
   if (!s) throw new Error("--listen requires host:port");
@@ -84,20 +85,20 @@ function printHelp() {
     "existing persisted pi sessions.",
     "",
     "options:",
-    "  --listen <host:port>  http bind address; takes precedence over HOST/PORT.",
+    "  --listen <host:port>  http bind address; takes precedence over PI_WEBUI_HOST/PI_WEBUI_PORT.",
     "                        use ':port' for default host, or '[::1]:port' for ipv6.",
     "  -h, --help            show this help and exit",
     "",
     "environment variables:",
-    `  HOST              http bind host (default ${DEFAULT_HOST})`,
-    `  PORT              http bind port (default ${DEFAULT_PORT})`,
+    `  PI_WEBUI_HOST     http bind host (default ${DEFAULT_HOST})`,
+    `  PI_WEBUI_PORT     http bind port (default ${DEFAULT_PORT})`,
     "  PI_PROJECT_CWD    project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR      pi agent config directory (default ~/.pi/agent)",
     "  PI_SESSION_DIR    session storage directory (default pi default)",
     "",
     "examples:",
     "  pi-webui --listen 0.0.0.0:3000",
-    "  HOST=0.0.0.0 PORT=3000 pi-webui",
+    "  PI_WEBUI_HOST=0.0.0.0 PI_WEBUI_PORT=3000 pi-webui",
   ];
   process.stdout.write(lines.join("\n") + "\n");
 }
@@ -127,12 +128,14 @@ if (args.help) {
   process.exit(0);
 }
 const listenFromArg = args.listen ? parseListen(args.listen) : null;
-const host = listenFromArg?.host ?? process.env.HOST ?? DEFAULT_HOST;
-const port = listenFromArg?.port ?? Number(process.env.PORT || DEFAULT_PORT);
-const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "public");
+const host = listenFromArg?.host ?? process.env.PI_WEBUI_HOST ?? DEFAULT_HOST;
+const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_PORT);
+// after build the script lives at dist/server/index.js; public/ stays at the
+// package root, so walk up two levels from import.meta.url.
+const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
 const appCwd = resolve(process.env.PI_PROJECT_CWD || process.cwd());
 const HOME_DIR = process.env.HOME || "";
-const ALLOW_ANY_CWD = process.env.PI_CWD_ALLOW_ANY === "1";
+const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
 
 function expandTilde(p) {
   if (!p) return p;
@@ -149,7 +152,7 @@ function validateCwdTarget(target) {
   if (!existsSync(resolved)) throw new Error(`path does not exist: ${resolved}`);
   if (!statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
   if (!ALLOW_ANY_CWD && HOME_DIR && resolved !== HOME_DIR && !resolved.startsWith(HOME_DIR + "/")) {
-    throw new Error(`path must be inside ${HOME_DIR} (set PI_CWD_ALLOW_ANY=1 to override)`);
+    throw new Error(`path must be inside ${HOME_DIR} (set PI_WEBUI_CWD_ALLOW_ANY=1 to override)`);
   }
   return resolved;
 }
@@ -170,7 +173,7 @@ function listDirectories(target) {
   if (!existsSync(resolved)) throw new Error(`path does not exist: ${resolved}`);
   if (!statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
   if (!isCwdReachable(resolved)) {
-    throw new Error(`path must be inside ${HOME_DIR} (set PI_CWD_ALLOW_ANY=1 to override)`);
+    throw new Error(`path must be inside ${HOME_DIR} (set PI_WEBUI_CWD_ALLOW_ANY=1 to override)`);
   }
   const entries = readdirSync(resolved, { withFileTypes: true })
     .filter((d) => {

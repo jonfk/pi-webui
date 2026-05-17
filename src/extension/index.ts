@@ -11,21 +11,26 @@
  * /webui open       - open the webui in the default browser
  */
 
-import { spawn, exec } from "node:child_process";
+import { spawn, exec, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileSync, readFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 const PID_FILE = join(homedir(), ".pi", "extensions", "webui.pid");
-const WEBUI_URL = "http://127.0.0.1:8787";
+const WEBUI_URL = "http://127.0.0.1:4096";
+
+// Tracks a server spawned by --webui in this pi process so we can terminate
+// it on session_shutdown. /webui start spawns detached and is NOT tracked
+// here — those servers intentionally outlive pi.
+let ownedChild: ChildProcess | null = null;
 
 const SUBCOMMANDS: Array<{ name: string; label: string }> = [
-	{ name: "start", label: "/webui start  - launch the server" },
-	{ name: "status", label: "/webui status - check server status" },
-	{ name: "stop", label: "/webui stop   - stop the server" },
-	{ name: "open", label: "/webui open   - open webui in browser" },
+	{ name: "start", label:  "start  - launch the server" },
+	{ name: "status", label: "status - check server status" },
+	{ name: "stop", label:   "stop   - stop the server" },
+	{ name: "open", label:   "open   - open webui in browser" },
 ];
 
 function getPid(): number | null {
@@ -76,7 +81,14 @@ function openUrl(url: string) {
 	exec(command);
 }
 
-function runStart(ctx: ExtensionCommandContext) {
+interface StartOptions {
+	listen?: string;
+	// When true, the spawned server is tied to this pi process (terminated on
+	// session_shutdown). When false, the server is detached and survives pi exit.
+	owned?: boolean;
+}
+
+function runStart(ctx: ExtensionCommandContext, opts: StartOptions = {}) {
 	const pid = getPid();
 	if (pid && isRunning(pid)) {
 		ctx.ui.notify(`pi-webui is already running (pid: ${pid})`, "info");
@@ -85,10 +97,21 @@ function runStart(ctx: ExtensionCommandContext) {
 	try {
 		const __dirname = dirname(fileURLToPath(import.meta.url));
 		const serverPath = join(__dirname, "..", "server.mjs");
-		const child = spawn("node", [serverPath], { detached: true, stdio: "ignore" });
+		const serverArgs = [serverPath];
+		if (opts.listen) serverArgs.push("--listen", opts.listen);
+		const detached = !opts.owned;
+		const child = spawn("node", serverArgs, { detached, stdio: "ignore" });
 		const newPid = child.pid!;
 		setPid(newPid);
-		child.unref();
+		if (detached) {
+			child.unref();
+		} else {
+			ownedChild = child;
+			child.once("exit", () => {
+				if (ownedChild === child) ownedChild = null;
+				clearPid();
+			});
+		}
 		ctx.ui.notify(`launching pi-webui server at ${WEBUI_URL}`, "info");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -150,6 +173,30 @@ async function pickAndRun(ctx: ExtensionCommandContext) {
 }
 
 export default function webuiExtension(pi: ExtensionAPI) {
+	pi.registerFlag?.("webui", {
+		description: "Start the pi-webui server on launch.",
+		type: "boolean",
+		default: false,
+	});
+
+	pi.registerFlag?.("webui-listen", {
+		description: "pi-webui http bind address (host:port, :port, or port). Implies --webui.",
+		type: "string",
+		default: "",
+	});
+
+	pi.on("session_shutdown", () => {
+		const child = ownedChild;
+		if (!child) return;
+		ownedChild = null;
+		try {
+			child.kill("SIGTERM");
+		} catch {
+			/* ignore */
+		}
+		clearPid();
+	});
+
 	pi.registerCommand("webui", {
 		description: "control the pi-webui server",
 		handler: async (args, ctx) => {
@@ -165,5 +212,29 @@ export default function webuiExtension(pi: ExtensionAPI) {
 				await pickAndRun(ctx);
 			}
 		},
+	});
+
+	// Defer one tick so pi has finished parsing argv before we read the flag.
+	// the ctx may have been swapped out by then (e.g. when this extension is
+	// loaded inside a pi-webui-spawned session that immediately switches to
+	// another session) — swallow the resulting stale-ctx error since the
+	// --webui flag is only meaningful for a top-level `pi --webui` invocation.
+	setImmediate(() => {
+		let listen: string;
+		let want: boolean;
+		try {
+			listen = String(pi.getFlag?.("webui-listen") || "").trim();
+			want = !!pi.getFlag?.("webui") || listen.length > 0;
+		} catch {
+			return;
+		}
+		if (!want) return;
+		const stubCtx = {
+			ui: {
+				notify: (msg: string, level?: string) =>
+					process.stderr.write(`[pi-webui] ${level ?? "info"}: ${msg}\n`),
+			},
+		} as unknown as ExtensionCommandContext;
+		runStart(stubCtx, { listen: listen || undefined, owned: true });
 	});
 }

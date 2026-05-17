@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createExtUiBridge } from "../server-ext-ui.mjs";
+import { createExtUiBridge } from "../dist/server/ext-ui.js";
 
 // Capture every message sent over the websocket so each test can assert on
 // the wire shape. The bridge owns request id allocation, so we let it pick

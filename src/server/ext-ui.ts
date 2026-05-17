@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Bridges pi's `ExtensionUIContext` to the webui over a websocket so
 // extensions like @aliou/pi-guardrails can prompt the user from the browser
 // instead of a TTY. Interactive surfaces (notify/select/confirm/input) round-
@@ -7,7 +8,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const piIndexUrl = import.meta.resolve("@mariozechner/pi-coding-agent");
+const piIndexUrl = import.meta.resolve("@earendil-works/pi-coding-agent");
 const piDistDir = dirname(fileURLToPath(piIndexUrl));
 const themeMod = await import(
   pathToFileURL(resolve(piDistDir, "modes/interactive/theme/theme.js")).href

@@ -26,6 +26,13 @@ control from the pi tui:
 > /webui stop     # stop the server
 ```
 
+or auto-start when pi launches (server is terminated when pi exits):
+
+```bash
+pi --webui                              # start with defaults
+pi --webui-listen 0.0.0.0:3000          # start with a custom bind address
+```
+
 run without installing:
 
 ```bash
@@ -39,14 +46,14 @@ npm install -g @khimaros/pi-webui
 pi-webui
 ```
 
-then open <http://127.0.0.1:8787>.
+then open <http://127.0.0.1:4096>.
 
 ### from a source checkout
 
 ```bash
-make            # install deps via npm install
-make start      # run the server (npm start)
-make start-dev  # run with auto-reload (npm run dev)
+make            # install deps + build (tsc)
+make start      # run the server
+make test       # build + run tests
 ```
 
 ## configuration
@@ -61,12 +68,12 @@ environment variables:
 
 | variable | default | purpose |
 | --- | --- | --- |
-| `HOST` | `127.0.0.1` | http bind address |
-| `PORT` | `8787` | http port |
+| `PI_WEBUI_HOST` | `127.0.0.1` | http bind address |
+| `PI_WEBUI_PORT` | `4096` | http port |
 | `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | pi default | session storage directory |
-| `PI_CWD_ALLOW_ANY` | `0` | allow `/cwd` to switch to paths outside `$HOME` |
+| `PI_WEBUI_CWD_ALLOW_ANY` | `0` | allow `/cwd` to switch to paths outside `$HOME` |
 
 examples:
 
@@ -88,21 +95,25 @@ see [ROADMAP.md](ROADMAP.md) for implemented and planned features.
 
 ## architecture
 
-- `server.mjs` — http + websocket server hosting the pi sdk runtime
-- `server-event-log.mjs`, `server-log.mjs`, `server-watch.mjs` —
-  server-side helpers
-- `public/` — browser client (vanilla js, no build step)
+```
+src/
+  extension/   pi extension entry (slash command + auto-start flag)
+  server/      http + websocket server hosting the pi sdk runtime
+                 index.ts, event-log.ts, log.ts, watch.ts, ext-ui.ts
+public/        browser client (vanilla js, no build step)
+test/          node --test files
+```
 
 ## development
 
 ```bash
-make            # install deps
+make            # install deps + build (tsc)
 make start      # run the server
-make start-dev  # run with auto-reload
 make install    # install pi-webui globally from this checkout
 make update     # update dependencies (npm update)
-make test       # run tests
-make lint       # syntax-check sources
+make test       # build + run tests
+make lint       # tsc --noEmit + node --check on .mjs sources
 make precommit  # lint + test
 make vendor     # refresh public/vendor (marked, highlight.js)
+make clean      # rm -rf dist build
 ```

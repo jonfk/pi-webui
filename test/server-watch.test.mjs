@@ -4,7 +4,7 @@ import {
   SELF_WRITE_WINDOW_MS,
   isSelfEcho,
   canRefreshNow,
-} from "../server-watch.mjs";
+} from "../dist/server/watch.js";
 
 const idleSession = {
   isStreaming: false,
