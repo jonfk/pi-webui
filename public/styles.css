@@ -725,6 +725,7 @@ body.drag-active .composer-wrapper {
 
 .modal-search {
   flex: 1;
+  min-width: 0;
   border: none;
   padding: 0.2rem 0.3rem;
   background: transparent;
@@ -732,6 +733,40 @@ body.drag-active .composer-wrapper {
 
 .modal-search:focus {
   border: none;
+}
+
+.modal-scope-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+}
+
+.modal-scope-control button {
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 0.2rem 0.45rem;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.modal-scope-control button:last-child {
+  border-right: none;
+}
+
+.modal-scope-control button:hover,
+.modal-scope-control button:focus {
+  color: var(--accent);
+  outline: none;
+}
+
+.modal-scope-control button.active {
+  background: var(--accent);
+  color: var(--bg);
 }
 
 .modal-title {

@@ -9,6 +9,7 @@ const modalSearch = document.getElementById("modal-search");
 const modalBody = document.getElementById("modal-body");
 const modalTitle = document.getElementById("modal-title");
 const modalDialog = modal.querySelector(".modal");
+const modalHeader = modal.querySelector(".modal-header");
 const statusLeft = document.getElementById("status-left");
 const statusRight = document.getElementById("status-right");
 const statusCwd = document.getElementById("status-cwd");
@@ -143,6 +144,8 @@ let modalOnSelect = null;
 let modalOnCommit = null;
 let modalMulti = false;
 let modalSelected = new Set();
+let modalEmptyMessage = "No matches";
+let modalHeaderAffordance = null;
 // Owns the cancel handler used by the ext_ui bridge to reply on dismissal
 // (Escape, backdrop click). closeModal() routes through dismiss(); commit
 // paths call modalCtrl.commit() to suppress the cancel before teardown.
@@ -153,6 +156,12 @@ let modalInputOverride = null;
 let modalCommitOverride = null;
 let modalTabHandler = null;
 let cwdPickerState = null;
+
+function setModalHeaderAffordance(el) {
+  modalHeaderAffordance?.remove();
+  modalHeaderAffordance = el || null;
+  if (modalHeaderAffordance) modalHeader.insertBefore(modalHeaderAffordance, modalTitle);
+}
 
 function escapeHtml(text) {
   return String(text)
@@ -770,6 +779,7 @@ function openModal(items, opts = {}) {
   modalOnSelect = opts.onSelect || null;
   modalOnCommit = opts.onCommit || null;
   modalSelected = new Set(opts.initiallySelected || []);
+  modalEmptyMessage = opts.emptyMessage || "No matches";
   modalSearch.value = "";
   modalIndex = 0;
   filterModal();
@@ -789,6 +799,8 @@ function closeModal() {
   modalOnCommit = null;
   modalMulti = false;
   modalSelected = new Set();
+  modalEmptyMessage = "No matches";
+  setModalHeaderAffordance(null);
   modalInputOverride = null;
   modalCommitOverride = null;
   modalTabHandler = null;
@@ -815,7 +827,7 @@ function renderModal() {
   if (modalFiltered.length === 0) {
     const empty = document.createElement("div");
     empty.className = "modal-empty";
-    empty.textContent = "No matches";
+    empty.textContent = modalEmptyMessage;
     modalBody.appendChild(empty);
     return;
   }
@@ -945,19 +957,17 @@ function formatRelativeTime(iso) {
 }
 
 function showSessionPicker(payload) {
-  const merged = [];
-  const seen = new Set();
-  const lists = [payload.sessions?.currentProject || [], payload.sessions?.allProjects || []];
-  for (const list of lists) {
-    for (const s of list) {
-      if (seen.has(s.path)) continue;
-      seen.add(s.path);
-      merged.push(s);
-    }
-  }
-  merged.sort((a, b) => String(b.modified).localeCompare(String(a.modified)));
+  let activeScope = "currentProject";
+  const currentProject = payload.sessions?.currentProject || [];
+  const allProjects = payload.sessions?.allProjects || [];
 
-  const items = merged.map((s) => {
+  const sortSessions = (sessions) =>
+    sessions.slice().sort((a, b) => String(b.modified).localeCompare(String(a.modified)));
+
+  const sessionsForScope = (scope) =>
+    sortSessions(scope === "allProjects" ? allProjects : currentProject);
+
+  const itemForSession = (s) => {
     const title = s.name || s.firstMessage || `${(s.id || "").slice(0, 8)}…`;
     const time = formatRelativeTime(s.modified);
     return {
@@ -972,16 +982,68 @@ function showSessionPicker(payload) {
         <div class="session-meta">${escapeHtml(time)} · ${escapeHtml(String(s.messageCount ?? 0))} msg</div>
       `,
     };
-  });
+  };
 
-  if (items.length === 0) {
-    showToast("No sessions to resume", "info");
-    return;
+  const emptyMessageForScope = () => {
+    const searching = modalSearch.value.trim().length > 0;
+    if (activeScope === "allProjects") return searching ? "No matches in all projects" : "No sessions found";
+    return searching ? "No matches in current project" : "No sessions in current project";
+  };
+
+  const scopeControl = document.createElement("div");
+  scopeControl.className = "modal-scope-control";
+
+  function renderScopeControl() {
+    scopeControl.innerHTML = "";
+    const options = [
+      ["currentProject", "Current project"],
+      ["allProjects", "All projects"],
+    ];
+    for (const [scope, label] of options) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.className = activeScope === scope ? "active" : "";
+      button.setAttribute("aria-pressed", activeScope === scope ? "true" : "false");
+      button.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        setScope(scope);
+      });
+      scopeControl.appendChild(button);
+    }
   }
 
-  openModal(items, (item) => {
-    send({ type: "slash_command", name: "resume", arg: item.path });
+  function renderScope() {
+    modalItems = sessionsForScope(activeScope).map(itemForSession);
+    modalEmptyMessage = emptyMessageForScope();
+    const q = modalSearch.value.trim().toLowerCase();
+    modalFiltered = q
+      ? modalItems.filter((it) => it.search.toLowerCase().includes(q))
+      : modalItems.slice();
+    if (modalIndex >= modalFiltered.length) modalIndex = 0;
+    renderModal();
+  }
+
+  function setScope(scope) {
+    if (activeScope === scope) return;
+    activeScope = scope;
+    modalIndex = 0;
+    renderScopeControl();
+    renderScope();
+  }
+
+  renderScopeControl();
+  openModal(sessionsForScope(activeScope).map(itemForSession), {
+    emptyMessage: emptyMessageForScope(),
+    onSelect: (item) => {
+      send({ type: "slash_command", name: "resume", arg: item.path });
+    },
   });
+  setModalHeaderAffordance(scopeControl);
+  modalInputOverride = renderScope;
+  modalTabHandler = () => {
+    setScope(activeScope === "currentProject" ? "allProjects" : "currentProject");
+  };
 }
 
 function renderStatusBar() {
