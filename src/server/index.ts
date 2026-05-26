@@ -38,6 +38,13 @@ import {
 import { createEventLog } from "./event-log.js";
 import { log as logger } from "./log.js";
 import { createExtUiBridge } from "./ext-ui.js";
+import {
+  addWorkspace,
+  findWorkspace,
+  loadWorkspaceRegistry,
+  removeWorkspace,
+  setActiveWorkspace,
+} from "./workspace-store.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -204,6 +211,28 @@ async function collectRecentCwds() {
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
 const sessionDir = process.env.PI_SESSION_DIR;
 
+function getInitialCwd() {
+  const registry = loadWorkspaceRegistry(agentDir);
+  if (!registry.activePath) return appCwd;
+  return validateCwdTarget(registry.activePath);
+}
+
+function serializeWorkspace(workspace) {
+  return {
+    name: workspace.name,
+    path: workspace.path,
+    createdAt: workspace.createdAt,
+    updatedAt: workspace.updatedAt,
+  };
+}
+
+function parseWorkspaceAddArg(arg) {
+  const trimmed = String(arg || "").trim();
+  if (!trimmed) throw new Error("Usage: /workspace-add <path> [name]");
+  const [path, ...nameParts] = trimmed.split(/\s+/);
+  return { path, name: nameParts.join(" ").trim() || undefined };
+}
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -285,6 +314,18 @@ const WEBUI_SLASH_COMMANDS = {
   cwd: {
     description: "switch the working directory",
     argumentHint: "[path]",
+  },
+  workspace: {
+    description: "switch to a saved workspace",
+    argumentHint: "[name-or-path]",
+  },
+  "workspace-add": {
+    description: "add a saved workspace",
+    argumentHint: "<path> [name]",
+  },
+  "workspace-remove": {
+    description: "remove a saved workspace",
+    argumentHint: "<name-or-path>",
   },
 };
 
@@ -552,6 +593,40 @@ const SLASH_HANDLERS = {
       cwds: await collectRecentCwds(),
     };
   },
+  workspace: async (ctrl, arg) => {
+    const target = String(arg || "").trim();
+    const registry = loadWorkspaceRegistry(agentDir);
+    if (target) {
+      const workspace = findWorkspace(registry, target);
+      if (!workspace) throw new Error(`workspace not found: ${target}`);
+      const resolved = validateCwdTarget(workspace.path);
+      if (resolved === ctrl.cwd) {
+        setActiveWorkspace(agentDir, resolved);
+        return { workspace: serializeWorkspace(workspace), cwd: resolved, unchanged: true };
+      }
+      await ctrl.switchCwd(resolved);
+      setActiveWorkspace(agentDir, resolved);
+      return { workspace: serializeWorkspace(workspace), cwd: resolved };
+    }
+    return {
+      needsPicker: "workspace",
+      currentCwd: ctrl.cwd,
+      activePath: registry.activePath || null,
+      workspaces: registry.workspaces.map(serializeWorkspace),
+    };
+  },
+  "workspace-add": async (ctrl, arg) => {
+    const parsed = parseWorkspaceAddArg(arg);
+    const resolved = validateCwdTarget(parsed.path);
+    const workspace = addWorkspace(agentDir, resolved, parsed.name);
+    return { workspace: serializeWorkspace(workspace), added: true };
+  },
+  "workspace-remove": async (ctrl, arg) => {
+    const selector = String(arg || "").trim();
+    if (!selector) throw new Error("Usage: /workspace-remove <name-or-path>");
+    const workspace = removeWorkspace(agentDir, selector);
+    return { workspace: serializeWorkspace(workspace), removed: true };
+  },
   resume: async (ctrl, arg) => {
     const path = String(arg || "").trim();
     if (path) {
@@ -611,7 +686,7 @@ function serializeSessionInfo(info) {
 class NativePiSessionController {
   constructor(ws) {
     this.ws = ws;
-    this.cwd = appCwd;
+    this.cwd = getInitialCwd();
     this.runtime = undefined;
     this.unsubscribe = undefined;
     this.fileWatcher = undefined;

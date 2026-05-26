@@ -75,6 +75,15 @@ environment variables:
 | `PI_SESSION_DIR` | pi default | session storage directory |
 | `PI_WEBUI_CWD_ALLOW_ANY` | `0` | allow `/cwd` to switch to paths outside `$HOME` |
 
+workspace shortcuts are persisted in `PI_AGENT_DIR/workspaces.json`.
+
+| slash command | purpose |
+| --- | --- |
+| `/workspace` | open the saved workspace picker |
+| `/workspace <name-or-path>` | switch to a saved workspace |
+| `/workspace-add <path> [name]` | save a workspace path, defaulting the name to the directory basename |
+| `/workspace-remove <name-or-path>` | remove a saved workspace |
+
 examples:
 
 ```bash

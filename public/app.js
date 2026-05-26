@@ -1338,6 +1338,20 @@ async function handleSlashResult(data) {
   if (data.needsPicker === "scoped-models") return showScopedModelsPicker(data);
   if (data.needsPicker === "logout") return showLogoutPicker(data);
   if (data.needsPicker === "cwd") return showCwdPicker(data);
+  if (data.needsPicker === "workspace") return showWorkspacePicker(data);
+  if (data.added && data.workspace) {
+    showToast(`workspace added: ${data.workspace.name}`, "info");
+    return;
+  }
+  if (data.removed && data.workspace) {
+    showToast(`workspace removed: ${data.workspace.name}`, "info");
+    return;
+  }
+  if (data.workspace && data.cwd) {
+    if (data.unchanged) showToast(`workspace already ${data.workspace.name}`, "info");
+    else showToast(`workspace → ${data.workspace.name}`, "info");
+    return;
+  }
   if (typeof data.cwd === "string" && data.cwd) {
     if (data.unchanged) showToast(`cwd already ${displayPath(data.cwd)}`, "info");
     else showToast(`cwd → ${displayPath(data.cwd)}`, "info");
@@ -1573,6 +1587,31 @@ function showModelPicker(payload) {
   });
   openModal(items, (item) => {
     send({ type: "slash_command", name: "model", arg: item.target });
+  });
+}
+
+function showWorkspacePicker(payload) {
+  const workspaces = payload.workspaces || [];
+  if (workspaces.length === 0) {
+    showToast("No workspaces saved", "info");
+    return;
+  }
+  const items = workspaces
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((workspace) => ({
+      target: workspace.name,
+      current: workspace.path === payload.currentCwd || workspace.path === payload.activePath,
+      search: `${workspace.name} ${workspace.path}`,
+      html: `
+        <div>
+          <div class="session-title">${escapeHtml(workspace.name)}</div>
+          <div class="session-cwd">${escapeHtml(displayPath(workspace.path))}</div>
+        </div>
+      `,
+    }));
+  openModal(items, (item) => {
+    send({ type: "slash_command", name: "workspace", arg: item.target });
   });
 }
 
