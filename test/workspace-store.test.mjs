@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -8,7 +8,7 @@ import {
   findWorkspace,
   loadWorkspaceRegistry,
   removeWorkspace,
-  setActiveWorkspace,
+  setLastCwd,
 } from "../dist/server/workspace-store.js";
 
 function tempAgentDir() {
@@ -43,19 +43,39 @@ test("workspace registry rejects duplicate names and paths", () => {
   }
 });
 
-test("active workspace is persisted and cleared when removed", () => {
+test("last cwd is persisted independently of saved workspaces", () => {
   const agentDir = tempAgentDir();
   try {
     addWorkspace(agentDir, "/tmp/project-a", "project-a");
-    setActiveWorkspace(agentDir, "/tmp/project-a");
-    assert.equal(loadWorkspaceRegistry(agentDir).activePath, "/tmp/project-a");
+    setLastCwd(agentDir, "/tmp/project-a");
+    assert.equal(loadWorkspaceRegistry(agentDir).lastCwd, "/tmp/project-a");
 
     const removed = removeWorkspace(agentDir, "project-a");
     assert.equal(removed.path, "/tmp/project-a");
-    assert.equal(loadWorkspaceRegistry(agentDir).activePath, undefined);
+    assert.equal(loadWorkspaceRegistry(agentDir).lastCwd, "/tmp/project-a");
 
     const raw = JSON.parse(readFileSync(join(agentDir, "workspaces.json"), "utf8"));
+    assert.equal(raw.lastCwd, "/tmp/project-a");
     assert.deepEqual(raw.workspaces, []);
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("activePath registries migrate to lastCwd when loaded", () => {
+  const agentDir = tempAgentDir();
+  try {
+    writeFileSync(join(agentDir, "workspaces.json"), `${JSON.stringify({
+      version: 1,
+      activePath: "/tmp/project-a",
+      workspaces: [],
+    })}\n`);
+
+    assert.deepEqual(loadWorkspaceRegistry(agentDir), {
+      version: 1,
+      lastCwd: "/tmp/project-a",
+      workspaces: [],
+    });
   } finally {
     rmSync(agentDir, { recursive: true, force: true });
   }

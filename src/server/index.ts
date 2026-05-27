@@ -43,7 +43,7 @@ import {
   findWorkspace,
   loadWorkspaceRegistry,
   removeWorkspace,
-  setActiveWorkspace,
+  setLastCwd,
 } from "./workspace-store.js";
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -99,7 +99,6 @@ function printHelp() {
     "environment variables:",
     `  PI_WEBUI_HOST     http bind host (default ${DEFAULT_HOST})`,
     `  PI_WEBUI_PORT     http bind port (default ${DEFAULT_PORT})`,
-    "  PI_PROJECT_CWD    project directory used for sessions (default cwd)",
     "  PI_AGENT_DIR      pi agent config directory (default ~/.pi/agent)",
     "  PI_SESSION_DIR    session storage directory (default pi default)",
     "",
@@ -140,7 +139,6 @@ const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_
 // after build the script lives at dist/server/index.js; public/ stays at the
 // package root, so walk up two levels from import.meta.url.
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
-const appCwd = resolve(process.env.PI_PROJECT_CWD || process.cwd());
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
 
@@ -213,8 +211,8 @@ const sessionDir = process.env.PI_SESSION_DIR;
 
 function getInitialCwd() {
   const registry = loadWorkspaceRegistry(agentDir);
-  if (!registry.activePath) return appCwd;
-  return validateCwdTarget(registry.activePath);
+  if (!registry.lastCwd) return resolve(process.cwd());
+  return validateCwdTarget(registry.lastCwd);
 }
 
 function serializeWorkspace(workspace) {
@@ -334,6 +332,7 @@ const SLASH_HANDLERS = {
     const result = await ctrl.runtime.newSession();
     if (!result?.cancelled) {
       await ctrl.bindSession();
+      setLastCwd(agentDir, ctrl.runtime.cwd);
       await ctrl.sendBootstrap();
     }
     return result;
@@ -454,6 +453,7 @@ const SLASH_HANDLERS = {
     const result = await ctrl.runtime.importFromJsonl(path);
     if (!result?.cancelled) {
       await ctrl.bindSession();
+      setLastCwd(agentDir, ctrl.runtime.cwd);
       await ctrl.sendBootstrap();
     }
     return result;
@@ -464,6 +464,7 @@ const SLASH_HANDLERS = {
     const result = await ctrl.runtime.fork(leafId, { position: "at" });
     if (!result?.cancelled) {
       await ctrl.bindSession();
+      setLastCwd(agentDir, ctrl.runtime.cwd);
       await ctrl.sendBootstrap();
     }
     return result;
@@ -474,6 +475,7 @@ const SLASH_HANDLERS = {
       const result = await ctrl.runtime.fork(entryId, { position: "before" });
       if (!result?.cancelled) {
         await ctrl.bindSession();
+        setLastCwd(agentDir, ctrl.runtime.cwd);
         await ctrl.sendBootstrap();
       }
       return result;
@@ -582,13 +584,13 @@ const SLASH_HANDLERS = {
     const target = String(arg || "").trim();
     if (target) {
       const resolved = validateCwdTarget(target);
-      if (resolved === ctrl.cwd) return { cwd: resolved, unchanged: true };
+      if (resolved === ctrl.runtime.cwd) return { cwd: resolved, unchanged: true };
       await ctrl.switchCwd(resolved);
       return { cwd: resolved };
     }
     return {
       needsPicker: "cwd",
-      currentCwd: ctrl.cwd,
+      currentCwd: ctrl.runtime.cwd,
       homeDir: HOME_DIR,
       cwds: await collectRecentCwds(),
     };
@@ -600,18 +602,16 @@ const SLASH_HANDLERS = {
       const workspace = findWorkspace(registry, target);
       if (!workspace) throw new Error(`workspace not found: ${target}`);
       const resolved = validateCwdTarget(workspace.path);
-      if (resolved === ctrl.cwd) {
-        setActiveWorkspace(agentDir, resolved);
+      if (resolved === ctrl.runtime.cwd) {
+        setLastCwd(agentDir, resolved);
         return { workspace: serializeWorkspace(workspace), cwd: resolved, unchanged: true };
       }
       await ctrl.switchCwd(resolved);
-      setActiveWorkspace(agentDir, resolved);
       return { workspace: serializeWorkspace(workspace), cwd: resolved };
     }
     return {
       needsPicker: "workspace",
-      currentCwd: ctrl.cwd,
-      activePath: registry.activePath || null,
+      currentCwd: ctrl.runtime.cwd,
       workspaces: registry.workspaces.map(serializeWorkspace),
     };
   },
@@ -633,6 +633,7 @@ const SLASH_HANDLERS = {
       const result = await ctrl.runtime.switchSession(path);
       if (!result?.cancelled) {
         await ctrl.bindSession();
+        setLastCwd(agentDir, ctrl.runtime.cwd);
         await ctrl.sendBootstrap();
       }
       return result;
@@ -686,7 +687,6 @@ function serializeSessionInfo(info) {
 class NativePiSessionController {
   constructor(ws) {
     this.ws = ws;
-    this.cwd = getInitialCwd();
     this.runtime = undefined;
     this.unsubscribe = undefined;
     this.fileWatcher = undefined;
@@ -707,10 +707,11 @@ class NativePiSessionController {
   }
 
   async init() {
+    const initialCwd = getInitialCwd();
     this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: this.cwd,
+      cwd: initialCwd,
       agentDir,
-      sessionManager: SessionManager.create(this.cwd, sessionDir),
+      sessionManager: SessionManager.create(initialCwd, sessionDir),
     });
 
     await this.bindSession();
@@ -718,7 +719,7 @@ class NativePiSessionController {
     sendJson(this.ws, {
       type: "connected",
       payload: {
-        appCwd: this.cwd,
+        cwd: this.runtime.cwd,
         agentDir,
         homeDir: process.env.HOME || "",
         diagnostics: this.runtime.diagnostics,
@@ -734,17 +735,17 @@ class NativePiSessionController {
   }
 
   async switchCwd(newCwd) {
-    logger.info("switching cwd", { from: this.cwd, to: newCwd });
+    logger.info("switching cwd", { from: this.runtime.cwd, to: newCwd });
     this.stopFileWatch();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     try { await this.runtime?.dispose(); } catch { /* ignore */ }
-    this.cwd = newCwd;
     this.runtime = await createAgentSessionRuntime(createRuntime, {
       cwd: newCwd,
       agentDir,
       sessionManager: SessionManager.create(newCwd, sessionDir),
     });
+    setLastCwd(agentDir, this.runtime.cwd);
     await this.bindSession();
     await this.sendBootstrap();
   }
@@ -900,6 +901,7 @@ class NativePiSessionController {
       const result = await this.runtime.switchSession(sessionFile);
       if (!result?.cancelled) {
         await this.bindSession();
+        setLastCwd(agentDir, this.runtime.cwd);
         await this.sendBootstrap();
       }
     } catch (error) {
@@ -1045,7 +1047,10 @@ class NativePiSessionController {
       try {
         logger.info("client requested session", { sessionFile });
         const switched = await this.runtime.switchSession(sessionFile);
-        if (!switched?.cancelled) await this.bindSession();
+        if (!switched?.cancelled) {
+          await this.bindSession();
+          setLastCwd(agentDir, this.runtime.cwd);
+        }
       } catch (error) {
         logger.warn("client requested session unavailable", {
           sessionFile,
@@ -1074,6 +1079,7 @@ class NativePiSessionController {
   async runCommand(command, handler) {
     try {
       const data = await handler();
+      setLastCwd(agentDir, this.runtime.cwd);
       sendJson(this.ws, { type: "command_result", payload: { command, ok: true, data } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1154,6 +1160,7 @@ class NativePiSessionController {
           const result = await this.runtime.newSession();
           if (!result.cancelled) {
             await this.bindSession();
+            setLastCwd(agentDir, this.runtime.cwd);
             await this.sendBootstrap();
           }
           return result;
@@ -1170,6 +1177,7 @@ class NativePiSessionController {
           const result = await this.runtime.switchSession(sessionPath);
           if (!result.cancelled) {
             await this.bindSession();
+            setLastCwd(agentDir, this.runtime.cwd);
             await this.sendBootstrap();
           }
           return result;
@@ -1326,5 +1334,5 @@ wss.on("connection", (ws, req) => {
 });
 
 server.listen(port, host, () => {
-  logger.info("listening", { url: `http://${host}:${port}`, appCwd, agentDir, sessionDir: sessionDir || undefined });
+  logger.info("listening", { url: `http://${host}:${port}`, agentDir, sessionDir: sessionDir || undefined });
 });

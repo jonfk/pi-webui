@@ -10,7 +10,7 @@ export type StoredWorkspace = {
 
 export type WorkspaceRegistry = {
   version: 1;
-  activePath?: string;
+  lastCwd?: string;
   workspaces: StoredWorkspace[];
 };
 
@@ -24,8 +24,8 @@ function assertWorkspaceRegistry(value: unknown): asserts value is WorkspaceRegi
   if (!value || typeof value !== "object") throw new Error("Invalid workspace registry");
   const registry = value as Record<string, unknown>;
   if (registry.version !== 1) throw new Error("Unsupported workspace registry version");
-  if (registry.activePath !== undefined && typeof registry.activePath !== "string") {
-    throw new Error("Invalid workspace registry activePath");
+  if (registry.lastCwd !== undefined && typeof registry.lastCwd !== "string") {
+    throw new Error("Invalid workspace registry lastCwd");
   }
   if (!Array.isArray(registry.workspaces)) throw new Error("Invalid workspace registry workspaces");
   for (const workspace of registry.workspaces) {
@@ -47,6 +47,10 @@ export function loadWorkspaceRegistry(agentDir: string): WorkspaceRegistry {
   const path = registryPath(agentDir);
   if (!existsSync(path)) return emptyRegistry();
   const registry = JSON.parse(readFileSync(path, "utf8"));
+  if (registry.activePath !== undefined) {
+    if (registry.lastCwd === undefined) registry.lastCwd = registry.activePath;
+    delete registry.activePath;
+  }
   assertWorkspaceRegistry(registry);
   return registry;
 }
@@ -85,7 +89,6 @@ export function removeWorkspace(agentDir: string, selector: string): StoredWorks
   );
   if (index === -1) throw new Error(`workspace not found: ${selector}`);
   const [removed] = registry.workspaces.splice(index, 1);
-  if (registry.activePath === removed.path) delete registry.activePath;
   saveWorkspaceRegistry(agentDir, registry);
   return removed;
 }
@@ -96,11 +99,8 @@ export function findWorkspace(registry: WorkspaceRegistry, selector: string): St
   );
 }
 
-export function setActiveWorkspace(agentDir: string, path: string): void {
+export function setLastCwd(agentDir: string, path: string): void {
   const registry = loadWorkspaceRegistry(agentDir);
-  if (!registry.workspaces.some((workspace) => workspace.path === path)) {
-    throw new Error(`workspace path is not registered: ${path}`);
-  }
-  registry.activePath = path;
+  registry.lastCwd = path;
   saveWorkspaceRegistry(agentDir, registry);
 }

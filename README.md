@@ -70,12 +70,11 @@ environment variables:
 | --- | --- | --- |
 | `PI_WEBUI_HOST` | `127.0.0.1` | http bind address |
 | `PI_WEBUI_PORT` | `4096` | http port |
-| `PI_PROJECT_CWD` | `process.cwd()` | project directory used for sessions |
 | `PI_AGENT_DIR` | pi default (`~/.pi/agent`) | pi agent config directory |
 | `PI_SESSION_DIR` | pi default | session storage directory |
 | `PI_WEBUI_CWD_ALLOW_ANY` | `0` | allow `/cwd` to switch to paths outside `$HOME` |
 
-workspace shortcuts are persisted in `PI_AGENT_DIR/workspaces.json`.
+workspace shortcuts and the last cwd are persisted in `PI_AGENT_DIR/workspaces.json`.
 
 | slash command | purpose |
 | --- | --- |
@@ -88,7 +87,7 @@ examples:
 
 ```bash
 pi-webui --listen 0.0.0.0:3000
-HOST=0.0.0.0 PORT=3000 PI_PROJECT_CWD=/path/to/project npm start
+PI_WEBUI_HOST=0.0.0.0 PI_WEBUI_PORT=3000 npm start
 ```
 
 ## attachments

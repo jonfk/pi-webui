@@ -645,7 +645,7 @@ function connect() {
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
         logger.info("connected", {
-          appCwd: packet.payload.appCwd,
+          cwd: packet.payload.cwd,
           agentDir: packet.payload.agentDir,
           slashCommandCount: slashCommands.length,
         });
@@ -1601,7 +1601,7 @@ function showWorkspacePicker(payload) {
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((workspace) => ({
       target: workspace.name,
-      current: workspace.path === payload.currentCwd || workspace.path === payload.activePath,
+      current: workspace.path === payload.currentCwd,
       search: `${workspace.name} ${workspace.path}`,
       html: `
         <div>
