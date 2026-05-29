@@ -44,7 +44,7 @@ async function resolveWithFixture(fixture, urlState) {
   });
 }
 
-test("resolveInitialUrlSession creates a Disposable New Session for new URL state", async () => {
+test("resolveInitialUrlSession creates a new session in cwd mode for new URL state", async () => {
   const fixture = makeFixture();
   const result = await resolveWithFixture(fixture, { kind: "new" });
   assert.equal(result.kind, "valid");

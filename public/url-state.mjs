@@ -42,7 +42,9 @@ export function makeCwdUrl(cwd, href) {
 }
 
 export function createBrowserUrlState({ location, history, reload, addEventListener }) {
-  let disposablePromptSent = false;
+  let cwdPointerPromptSent = false;
+  let pendingUrlTransition = null;
+  let latestSessionFile = null;
   let popstateInstalled = false;
   const on = addEventListener || globalThis.addEventListener?.bind(globalThis);
 
@@ -64,9 +66,9 @@ export function createBrowserUrlState({ location, history, reload, addEventListe
       on?.("popstate", () => reload());
     },
 
-    canonicalizeDisposableCwd(defaultCwd) {
+    canonicalizeCwdPointer(cwd) {
       if (this.current().kind !== "new") return;
-      replace(makeCwdUrl(defaultCwd, location.href));
+      replace(makeCwdUrl(cwd, location.href));
     },
 
     syncDurableSession(sessionFile, options = {}) {
@@ -78,28 +80,67 @@ export function createBrowserUrlState({ location, history, reload, addEventListe
         push(makeSessionUrl(sessionFile, location.href));
         return;
       }
-      if (options.allowFromDisposable) {
+      if (options.allowFromCwdPointer) {
         push(makeSessionUrl(sessionFile, location.href));
       }
     },
 
-    markDisposablePromptSent() {
-      disposablePromptSent = true;
+    markCwdPointerPromptSent() {
+      cwdPointerPromptSent = true;
     },
 
-    promoteAcceptedDisposablePrompt(sessionFile) {
-      if (!disposablePromptSent || !sessionFile) return;
+    promoteAcceptedCwdPointerPrompt(sessionFile) {
+      if (!cwdPointerPromptSent || !sessionFile) return;
       const state = this.current();
       if (state.kind !== "new" && state.kind !== "cwd") return;
-      disposablePromptSent = false;
+      cwdPointerPromptSent = false;
       replace(makeSessionUrl(sessionFile, location.href));
     },
 
-    syncDisposableCwd(cwd) {
+    syncCwdPointer(cwd) {
       if (!cwd) return;
       const state = this.current();
       if (state.kind === "cwd" && state.cwd === cwd) return;
       push(makeCwdUrl(cwd, location.href));
+    },
+
+    observeCommandStarted(command) {
+      if (command === "prompt") {
+        this.markCwdPointerPromptSent();
+        return;
+      }
+
+      const intent = urlTransitionIntent(command);
+      if (intent) pendingUrlTransition = { command, intent };
+    },
+
+    observeSessionState(sessionState) {
+      latestSessionFile = sessionState?.sessionFile || null;
+      if (pendingUrlTransition) return;
+      this.syncDurableSession(latestSessionFile);
+    },
+
+    observeCommandSucceeded(command, data) {
+      if (command === "prompt") {
+        this.promoteAcceptedCwdPointerPrompt(latestSessionFile);
+        cwdPointerPromptSent = false;
+        return;
+      }
+
+      const transition = consumeUrlTransition(command);
+      const intent = transition?.intent || urlTransitionIntent(command);
+      if (intent === "cwd") {
+        if (typeof data?.cwd === "string") this.syncCwdPointer(data.cwd);
+        return;
+      }
+      if (intent === "session") {
+        this.syncDurableSession(latestSessionFile, { allowFromCwdPointer: true });
+      }
+    },
+
+    observeCommandFailed(command) {
+      if (command === "prompt") cwdPointerPromptSent = false;
+      consumeUrlTransition(command);
     },
 
     navigateToSession(sessionFile) {
@@ -110,6 +151,14 @@ export function createBrowserUrlState({ location, history, reload, addEventListe
       location.href = makeCwdUrl(cwd, location.href);
     },
   };
+
+  function consumeUrlTransition(command) {
+    if (!pendingUrlTransition) return null;
+    if (pendingUrlTransition.command !== command) return null;
+    const transition = pendingUrlTransition;
+    pendingUrlTransition = null;
+    return transition;
+  }
 }
 
 function copyUrlStateParam(source, target, name) {
@@ -119,4 +168,25 @@ function copyUrlStateParam(source, target, name) {
 
 function absoluteBase(href) {
   return new URL(href || "/", "http://localhost/");
+}
+
+function urlTransitionIntent(command) {
+  if (
+    command === "new_session" ||
+    command === "slash:new" ||
+    command === "slash:cwd" ||
+    command === "slash:workspace"
+  ) {
+    return "cwd";
+  }
+  if (
+    command === "switch_session" ||
+    command === "slash:resume" ||
+    command === "slash:import" ||
+    command === "slash:clone" ||
+    command === "slash:fork"
+  ) {
+    return "session";
+  }
+  return null;
 }

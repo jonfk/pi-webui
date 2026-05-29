@@ -374,8 +374,14 @@ function syncRunningButton() {
 
 function send(payload) {
   if (socket?.readyState === WebSocket.OPEN) {
+    urlState.observeCommandStarted(commandNameForOutgoingPayload(payload));
     socket.send(JSON.stringify(payload));
   }
+}
+
+function commandNameForOutgoingPayload(payload) {
+  if (payload?.type === "slash_command") return `slash:${payload.name || ""}`;
+  return payload?.type || "unknown";
 }
 
 function setComposerBlocked(blocked) {
@@ -396,26 +402,7 @@ function handleInvalidUrlState(payload) {
 }
 
 function syncUrlForCommandResult(command, data) {
-  if (command === "prompt") {
-    urlState.promoteAcceptedDisposablePrompt(currentSessionState?.sessionFile);
-    return;
-  }
-  if (command === "new_session" || command === "slash:new") {
-    if (typeof data?.cwd === "string") urlState.syncDisposableCwd(data.cwd);
-    return;
-  }
-  if (command === "slash:cwd" || command === "slash:workspace") {
-    if (typeof data?.cwd === "string") urlState.syncDisposableCwd(data.cwd);
-    return;
-  }
-  if (
-    command === "slash:resume" ||
-    command === "slash:import" ||
-    command === "slash:clone" ||
-    command === "slash:fork"
-  ) {
-    urlState.syncDurableSession(currentSessionState?.sessionFile, { allowFromDisposable: true });
-  }
+  urlState.observeCommandSucceeded(command, data);
 }
 
 function isLogAtBottom() {
@@ -692,7 +679,7 @@ function connect() {
         setComposerBlocked(false);
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
-        urlState.canonicalizeDisposableCwd(packet.payload.cwd);
+        urlState.canonicalizeCwdPointer(packet.payload.cwd);
         logger.info("connected", {
           cwd: packet.payload.cwd,
           agentDir: packet.payload.agentDir,
@@ -720,7 +707,7 @@ function connect() {
           });
         }
         currentSessionState = next;
-        urlState.syncDurableSession(next?.sessionFile);
+        urlState.observeSessionState(next);
         renderStatusBar();
         return;
       }
@@ -757,6 +744,7 @@ function connect() {
         if (!packet.payload.ok) {
           const msg = packet.payload.error || `${packet.payload.command} failed`;
           logger.warn("command failed", { command: packet.payload.command, error: msg });
+          urlState.observeCommandFailed(packet.payload.command);
           showToast(msg, "error");
           csSetError(chatState, msg);
           renderStatusBar();
@@ -2111,7 +2099,6 @@ composer.addEventListener("submit", (event) => {
   pendingImages.length = 0;
   renderAttachments();
   logger.info("prompt sent", { length: message.length, images: images.length });
-  urlState.markDisposablePromptSent();
   appendOptimisticUserMessage(message, images);
   send({ type: "prompt", message, images });
 });

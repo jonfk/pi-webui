@@ -19,7 +19,7 @@ test("parseBrowserUrl reads URL Session Pointers and URL Cwd Pointers", () => {
   });
 });
 
-test("parseBrowserUrl treats missing URL state as a Disposable New Session", () => {
+test("parseBrowserUrl treats missing URL state as new session cwd mode", () => {
   assert.deepEqual(parseBrowserUrl("http://localhost/?debug=1"), { kind: "new" });
 });
 
@@ -74,17 +74,17 @@ function makeTracker(href = "http://localhost/") {
   return { state, location, calls, listeners, reloadCount: () => reloadCount };
 }
 
-test("canonicalizeDisposableCwd replaces a new URL with a cwd URL", () => {
+test("canonicalizeCwdPointer replaces a new URL with a cwd URL", () => {
   const { state, calls, location } = makeTracker("http://localhost/");
-  state.canonicalizeDisposableCwd("/work/project");
+  state.canonicalizeCwdPointer("/work/project");
   assert.deepEqual(calls.map((c) => c[0]), ["replaceState"]);
   assert.equal(location.href, "http://localhost/?cwd=%2Fwork%2Fproject");
 });
 
-test("promoteAcceptedDisposablePrompt replaces the first accepted disposable prompt", () => {
+test("promoteAcceptedCwdPointerPrompt replaces the first accepted cwd pointer prompt", () => {
   const { state, calls, location } = makeTracker("http://localhost/?cwd=%2Fwork");
-  state.markDisposablePromptSent();
-  state.promoteAcceptedDisposablePrompt("/tmp/session.jsonl");
+  state.markCwdPointerPromptSent();
+  state.promoteAcceptedCwdPointerPrompt("/tmp/session.jsonl");
   assert.deepEqual(calls.map((c) => c[0]), ["replaceState"]);
   assert.equal(location.href, "http://localhost/?session=%2Ftmp%2Fsession.jsonl");
 });
@@ -96,7 +96,7 @@ test("syncDurableSession pushes between distinct durable sessions", () => {
   assert.equal(location.href, "http://localhost/?session=%2Ftmp%2Ftwo.jsonl");
 });
 
-test("syncDurableSession is a no-op for same session, invalid URLs, and unprompted disposable URLs", () => {
+test("syncDurableSession is a no-op for same session, invalid URLs, and unprompted cwd URLs", () => {
   makeTracker("http://localhost/?session=%2Ftmp%2Fs.jsonl").state.syncDurableSession("/tmp/s.jsonl");
   const same = makeTracker("http://localhost/?session=%2Ftmp%2Fs.jsonl");
   same.state.syncDurableSession("/tmp/s.jsonl");
@@ -106,25 +106,48 @@ test("syncDurableSession is a no-op for same session, invalid URLs, and unprompt
   invalid.state.syncDurableSession("/tmp/other.jsonl");
   assert.equal(invalid.calls.length, 0);
 
-  const disposable = makeTracker("http://localhost/?cwd=%2Fwork");
-  disposable.state.syncDurableSession("/tmp/s.jsonl");
-  assert.equal(disposable.calls.length, 0);
+  const cwd = makeTracker("http://localhost/?cwd=%2Fwork");
+  cwd.state.syncDurableSession("/tmp/s.jsonl");
+  assert.equal(cwd.calls.length, 0);
 });
 
-test("syncDurableSession can explicitly move from disposable to durable session", () => {
+test("syncDurableSession can explicitly move from cwd pointer to session pointer", () => {
   const { state, calls, location } = makeTracker("http://localhost/?cwd=%2Fwork");
-  state.syncDurableSession("/tmp/s.jsonl", { allowFromDisposable: true });
+  state.syncDurableSession("/tmp/s.jsonl", { allowFromCwdPointer: true });
   assert.deepEqual(calls.map((c) => c[0]), ["pushState"]);
   assert.equal(location.href, "http://localhost/?session=%2Ftmp%2Fs.jsonl");
 });
 
-test("syncDisposableCwd pushes when cwd changes and no-ops for same cwd", () => {
+test("syncCwdPointer pushes when cwd changes and no-ops for same cwd", () => {
   const { state, calls, location } = makeTracker("http://localhost/?cwd=%2Fone");
-  state.syncDisposableCwd("/one");
+  state.syncCwdPointer("/one");
   assert.equal(calls.length, 0);
-  state.syncDisposableCwd("/two");
+  state.syncCwdPointer("/two");
   assert.deepEqual(calls.map((c) => c[0]), ["pushState"]);
   assert.equal(location.href, "http://localhost/?cwd=%2Ftwo");
+});
+
+test("URL transition intent suppresses transient session state before cwd command result", () => {
+  const { state, calls, location } = makeTracker("http://localhost/?session=%2Ftmp%2Fold.jsonl");
+
+  state.observeCommandStarted("slash:new");
+  state.observeSessionState({ sessionFile: "/tmp/fresh-empty.jsonl" });
+  state.observeCommandSucceeded("slash:new", { cwd: "/work/project" });
+
+  assert.deepEqual(calls.map((c) => c[0]), ["pushState"]);
+  assert.equal(location.href, "http://localhost/?cwd=%2Fwork%2Fproject");
+});
+
+test("URL transition intent promotes durable session commands after command success", () => {
+  const { state, calls, location } = makeTracker("http://localhost/?cwd=%2Fwork");
+
+  state.observeCommandStarted("slash:resume");
+  state.observeSessionState({ sessionFile: "/tmp/resumed.jsonl" });
+  assert.equal(calls.length, 0);
+
+  state.observeCommandSucceeded("slash:resume", {});
+  assert.deepEqual(calls.map((c) => c[0]), ["pushState"]);
+  assert.equal(location.href, "http://localhost/?session=%2Ftmp%2Fresumed.jsonl");
 });
 
 test("installPopstateReload registers one Back/Forward reload handler", () => {
