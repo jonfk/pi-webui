@@ -81,6 +81,23 @@ test("canonicalizeCwdPointer replaces a new URL with a cwd URL", () => {
   assert.equal(location.href, "http://localhost/?cwd=%2Fwork%2Fproject");
 });
 
+test("canonicalizeCwdPointer replaces a noncanonical cwd URL", () => {
+  const { state, calls, location } = makeTracker("http://localhost/?cwd=~");
+  state.canonicalizeCwdPointer("/Users/example");
+  assert.deepEqual(calls.map((c) => c[0]), ["replaceState"]);
+  assert.equal(location.href, "http://localhost/?cwd=%2FUsers%2Fexample");
+});
+
+test("canonicalizeCwdPointer no-ops for canonical cwd and session URLs", () => {
+  const canonical = makeTracker("http://localhost/?cwd=%2Fwork%2Fproject");
+  canonical.state.canonicalizeCwdPointer("/work/project");
+  assert.equal(canonical.calls.length, 0);
+
+  const session = makeTracker("http://localhost/?session=%2Ftmp%2Fs.jsonl");
+  session.state.canonicalizeCwdPointer("/work/project");
+  assert.equal(session.calls.length, 0);
+});
+
 test("promoteAcceptedCwdPointerPrompt replaces the first accepted cwd pointer prompt", () => {
   const { state, calls, location } = makeTracker("http://localhost/?cwd=%2Fwork");
   state.markCwdPointerPromptSent();

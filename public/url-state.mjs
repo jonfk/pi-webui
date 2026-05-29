@@ -67,8 +67,14 @@ export function createBrowserUrlState({ location, history, reload, addEventListe
     },
 
     canonicalizeCwdPointer(cwd) {
-      if (this.current().kind !== "new") return;
-      replace(makeCwdUrl(cwd, location.href));
+      const state = this.current();
+      if (state.kind === "new") {
+        replace(makeCwdUrl(cwd, location.href));
+        return;
+      }
+      if (state.kind === "cwd" && state.cwd !== cwd) {
+        replace(makeCwdUrl(cwd, location.href));
+      }
     },
 
     syncDurableSession(sessionFile, options = {}) {
