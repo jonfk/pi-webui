@@ -28,6 +28,22 @@ _Avoid_: command reload, menu refresh
 The server module that builds the **Slash Command Catalog** and classifies slash command invocations for web dispatch.
 _Avoid_: slash command helper, command utility
 
+**URL Session Pointer**:
+A URL value that names the Pi session pi-webui should open for the current browser tab.
+_Avoid_: active session storage, selected session localStorage
+
+**URL Cwd Pointer**:
+A URL value that names the working directory for a **Disposable New Session**.
+_Avoid_: cwd storage, initial cwd localStorage
+
+**Disposable New Session**:
+An unprompted Pi session opened from `/` or `/new` whose identity is not preserved in the URL.
+_Avoid_: new session marker, ephemeral session pointer
+
+**Invalid Session Message**:
+A frontend pseudo message that explains why the current URL session or cwd state cannot be opened.
+_Avoid_: invalid session page, invalid session toast
+
 ## Relationships
 
 - A **Slash Command Catalog** may include **Skill Commands** when pi skill commands are enabled.
@@ -36,8 +52,17 @@ _Avoid_: slash command helper, command utility
 - An **Unsupported Slash Command** remains visible in the **Slash Command Catalog** with `supported: false`.
 - A **Slash Command Refresh** keeps the browser's **Slash Command Catalog** aligned with the active session resources.
 - The **Slash Command Module** owns catalog construction and dispatch classification for slash commands in pi-webui, but command execution remains with the session controller.
+- A **URL Session Pointer** is scoped to one browser tab and replaces browser-local active-session storage for choosing the active Pi session.
+- A **Disposable New Session** is selected by a **URL Cwd Pointer** and becomes a normal **URL Session Pointer** only after Pi accepts the first prompt.
+- An **Invalid Session Message** is shown instead of bootstrapping a fallback session when URL session or cwd state cannot be opened.
 
 ## Example Dialogue
 
 > **Dev:** "Should pi-webui expand a **Skill Command** itself?"
 > **Domain expert:** "No. pi-webui should submit it through the session prompt path, matching the TUI, so pi owns the expansion."
+
+> **Dev:** "Should an empty session opened from `/new` preserve its session file in the URL before the first prompt?"
+> **Domain expert:** "No. It is a **Disposable New Session** until Pi accepts the first prompt."
+
+> **Dev:** "Should a deleted **URL Session Pointer** fall back to the default session?"
+> **Domain expert:** "No. Show an **Invalid Session Message** so the user does not accidentally type into the wrong Pi session."

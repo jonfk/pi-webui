@@ -20,7 +20,9 @@
     "pi-webui": "dist/server/index.js"
   },
   "pi": {
-    "extensions": ["dist/extension/index.js"]
+    "extensions": [
+      "dist/extension/index.js"
+    ]
   },
   "files": [
     "dist",
