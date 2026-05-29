@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import { createServer } from "node:http";
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync, watch as fsWatch } from "node:fs";
-import { extname, dirname, isAbsolute, join, resolve } from "node:path";
+import { createReadStream, existsSync, readFileSync, watch as fsWatch } from "node:fs";
+import { extname, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import {
@@ -38,6 +38,13 @@ import {
 import { createEventLog } from "./event-log.js";
 import { log as logger } from "./log.js";
 import { createExtUiBridge } from "./ext-ui.js";
+import {
+  listDirectories as listDirectoriesWithPolicy,
+  validateCwdTarget as validateCwdTargetWithPolicy,
+} from "./cwd.js";
+import { listSerializedSessions } from "./session-info.js";
+import { parseServerUrlState } from "./url-state.js";
+import { resolveInitialUrlSession } from "./url-session-startup.js";
 import {
   addWorkspace,
   findWorkspace,
@@ -141,54 +148,14 @@ const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
-
-function expandTilde(p) {
-  if (!p) return p;
-  if (p === "~") return HOME_DIR;
-  if (p.startsWith("~/")) return resolve(HOME_DIR, p.slice(2));
-  return p;
-}
+const cwdPolicy = { homeDir: HOME_DIR, allowAnyCwd: ALLOW_ANY_CWD };
 
 function validateCwdTarget(target) {
-  if (!target) throw new Error("path is required");
-  const expanded = expandTilde(target);
-  if (!isAbsolute(expanded)) throw new Error("path must be absolute");
-  const resolved = resolve(expanded);
-  if (!existsSync(resolved)) throw new Error(`path does not exist: ${resolved}`);
-  if (!statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
-  if (!ALLOW_ANY_CWD && HOME_DIR && resolved !== HOME_DIR && !resolved.startsWith(HOME_DIR + "/")) {
-    throw new Error(`path must be inside ${HOME_DIR} (set PI_WEBUI_CWD_ALLOW_ANY=1 to override)`);
-  }
-  return resolved;
-}
-
-function isCwdReachable(resolved) {
-  if (ALLOW_ANY_CWD) return true;
-  if (!HOME_DIR) return true;
-  if (resolved === HOME_DIR) return true;
-  if (resolved.startsWith(HOME_DIR + "/")) return true;
-  // also allow listing ancestors of $HOME so the picker can navigate toward it.
-  return HOME_DIR === resolved || HOME_DIR.startsWith(resolved + "/");
+  return validateCwdTargetWithPolicy(target, cwdPolicy);
 }
 
 function listDirectories(target) {
-  const expanded = expandTilde(target);
-  if (!isAbsolute(expanded)) throw new Error("path must be absolute");
-  const resolved = resolve(expanded);
-  if (!existsSync(resolved)) throw new Error(`path does not exist: ${resolved}`);
-  if (!statSync(resolved).isDirectory()) throw new Error(`not a directory: ${resolved}`);
-  if (!isCwdReachable(resolved)) {
-    throw new Error(`path must be inside ${HOME_DIR} (set PI_WEBUI_CWD_ALLOW_ANY=1 to override)`);
-  }
-  const entries = readdirSync(resolved, { withFileTypes: true })
-    .filter((d) => {
-      if (!d.isDirectory()) return false;
-      if (d.name.startsWith(".")) return false;
-      return true;
-    })
-    .map((d) => ({ name: d.name, path: resolve(resolved, d.name) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  return { path: resolved, entries };
+  return listDirectoriesWithPolicy(target, cwdPolicy);
 }
 
 async function collectRecentCwds() {
@@ -280,6 +247,11 @@ function sendJson(ws, payload) {
   }
 }
 
+function commandNameForInvalidState(payload) {
+  if (payload?.type === "slash_command") return `slash:${payload?.name || "unknown"}`;
+  return payload?.type || "unknown";
+}
+
 function sendFile(res, filePath) {
   const type = mimeTypes[extname(filePath)] || "application/octet-stream";
   res.writeHead(200, {
@@ -334,6 +306,7 @@ const SLASH_HANDLERS = {
       await ctrl.bindSession();
       setLastCwd(agentDir, ctrl.runtime.cwd);
       await ctrl.sendBootstrap();
+      return { ...result, cwd: ctrl.runtime.cwd };
     }
     return result;
   },
@@ -638,17 +611,10 @@ const SLASH_HANDLERS = {
       }
       return result;
     }
-    const [currentProject, allProjects] = await Promise.all([
-      SessionManager.list(ctrl.runtime.cwd, sessionDir),
-      SessionManager.listAll(),
-    ]);
     return {
       needsPicker: "session",
       currentSessionFile: ctrl.session.sessionFile || null,
-      sessions: {
-        currentProject: currentProject.map(serializeSessionInfo),
-        allProjects: allProjects.map(serializeSessionInfo),
-      },
+      sessions: await listSerializedSessions({ cwd: ctrl.runtime.cwd, sessionDir }),
     };
   },
 };
@@ -676,17 +642,11 @@ function shouldRefreshMessages(eventType) {
   ]).has(eventType);
 }
 
-function serializeSessionInfo(info) {
-  return {
-    ...info,
-    created: info.created instanceof Date ? info.created.toISOString() : info.created,
-    modified: info.modified instanceof Date ? info.modified.toISOString() : info.modified,
-  };
-}
-
 class NativePiSessionController {
-  constructor(ws) {
+  constructor(ws, urlState) {
     this.ws = ws;
+    this.urlState = urlState;
+    this.invalidUrlState = false;
     this.runtime = undefined;
     this.unsubscribe = undefined;
     this.fileWatcher = undefined;
@@ -707,11 +667,23 @@ class NativePiSessionController {
   }
 
   async init() {
-    const initialCwd = getInitialCwd();
+    const defaultCwd = getInitialCwd();
+    const resolved = await resolveInitialUrlSession({
+      urlState: this.urlState,
+      defaultCwd,
+      sessionDir,
+      policy: cwdPolicy,
+    });
+    if (resolved.kind === "invalid") {
+      this.invalidUrlState = true;
+      sendJson(this.ws, { type: "invalid_url_state", payload: resolved.payload });
+      return;
+    }
+
     this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: initialCwd,
+      cwd: resolved.cwd,
       agentDir,
-      sessionManager: SessionManager.create(initialCwd, sessionDir),
+      sessionManager: resolved.sessionManager,
     });
 
     await this.bindSession();
@@ -963,17 +935,9 @@ class NativePiSessionController {
   }
 
   async sendSessions() {
-    const [currentProject, allProjects] = await Promise.all([
-      SessionManager.list(this.runtime.cwd, sessionDir),
-      SessionManager.listAll(),
-    ]);
-
     sendJson(this.ws, {
       type: "sessions",
-      payload: {
-        currentProject: currentProject.map(serializeSessionInfo),
-        allProjects: allProjects.map(serializeSessionInfo),
-      },
+      payload: await listSerializedSessions({ cwd: this.runtime.cwd, sessionDir }),
     });
   }
 
@@ -1042,22 +1006,7 @@ class NativePiSessionController {
   // Handle the client's resume request. If we can replay missed events,
   // do so without disturbing UI state. Otherwise fall back to a reset +
   // fresh bootstrap.
-  async handleReady(lastSeq, sessionFile) {
-    if (sessionFile && sessionFile !== (this.session.sessionFile || null)) {
-      try {
-        logger.info("client requested session", { sessionFile });
-        const switched = await this.runtime.switchSession(sessionFile);
-        if (!switched?.cancelled) {
-          await this.bindSession();
-          setLastCwd(agentDir, this.runtime.cwd);
-        }
-      } catch (error) {
-        logger.warn("client requested session unavailable", {
-          sessionFile,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+  async handleReady(lastSeq) {
     const result = this.eventLog.eventsAfter(lastSeq);
     if (result.miss) {
       logger.info("client resume miss, full bootstrap", { lastSeq });
@@ -1091,6 +1040,19 @@ class NativePiSessionController {
   async handle(payload) {
     await this.ready;
 
+    if (this.invalidUrlState) {
+      if (payload?.type === "ready") return;
+      sendJson(this.ws, {
+        type: "command_result",
+        payload: {
+          command: commandNameForInvalidState(payload),
+          ok: false,
+          error: "URL state is invalid",
+        },
+      });
+      return;
+    }
+
     const inboundType = payload?.type === "slash_command"
       ? `slash_command:${payload?.name || "?"}`
       : (payload?.type || "unknown");
@@ -1099,8 +1061,7 @@ class NativePiSessionController {
     switch (payload?.type) {
       case "ready": {
         const lastSeq = typeof payload.lastSeq === "number" ? payload.lastSeq : null;
-        const sessionFile = typeof payload.sessionFile === "string" && payload.sessionFile ? payload.sessionFile : null;
-        await this.handleReady(lastSeq, sessionFile);
+        await this.handleReady(lastSeq);
         return;
       }
       case "refresh":
@@ -1162,6 +1123,7 @@ class NativePiSessionController {
             await this.bindSession();
             setLastCwd(agentDir, this.runtime.cwd);
             await this.sendBootstrap();
+            return { ...result, cwd: this.runtime.cwd };
           }
           return result;
         });
@@ -1310,7 +1272,9 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 wss.on("connection", (ws, req) => {
   const remote = req?.socket?.remoteAddress || "unknown";
   logger.info("ws connect", { remote });
-  const controller = new NativePiSessionController(ws);
+  const url = new URL(req.url || "/ws", `http://${req.headers.host || "localhost"}`);
+  const urlState = parseServerUrlState(url.searchParams, cwdPolicy);
+  const controller = new NativePiSessionController(ws, urlState);
 
   ws.on("message", (raw) => {
     try {
