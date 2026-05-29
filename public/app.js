@@ -31,7 +31,6 @@ import {
   extractResultParts,
   stripCatNLinePrefixes,
 } from "./tool-result.mjs";
-import { ACTIVE_SESSION_KEY, extractSessionFileFromState } from "./storage.mjs";
 import { formatMessage, sdkContentToBlocks } from "./format-message.mjs";
 import { shouldHighlightCodeBlock } from "./highlight.mjs";
 import { planBlockRenders, reconcileChildrenInPlace } from "./render-blocks.mjs";
@@ -39,10 +38,20 @@ import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-fol
 import { log as logger } from "./log.mjs";
 import { createCustomOverlayHost } from "./ext-custom.mjs";
 import { routeInput } from "./route-input.mjs";
+import { createBrowserUrlState } from "./url-state.mjs";
+import {
+  invalidUrlStateToChatItem,
+  recoveryActionForInvalidUrlState,
+} from "./invalid-url-state.mjs";
 
 let socket;
 let currentSessionState = null;
 const chatState = createChatState();
+const urlState = createBrowserUrlState({
+  location: window.location,
+  history: window.history,
+  reload: () => window.location.reload(),
+});
 let slashCommands = [];
 let homeDir = "";
 let slashFiltered = [];
@@ -51,6 +60,8 @@ let slashIndex = 0;
 // session_event with a seq; we send our latest one back on (re)connect via
 // `ready` so the server can replay missed events without a full reset.
 let lastSeq = null;
+let invalidUrlState = null;
+urlState.installPopstateReload();
 
 // Track the visual viewport so the app shell shrinks when the mobile virtual
 // keyboard opens. Without this, `100vh` stays the full screen and the top of
@@ -65,23 +76,6 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("scroll", syncAppHeight);
 } else {
   window.addEventListener("resize", syncAppHeight);
-}
-
-function loadStoredSessionFile() {
-  try {
-    return localStorage.getItem(ACTIVE_SESSION_KEY) || null;
-  } catch {
-    return null;
-  }
-}
-
-function saveStoredSessionFile(file) {
-  try {
-    if (file) localStorage.setItem(ACTIVE_SESSION_KEY, file);
-    else localStorage.removeItem(ACTIVE_SESSION_KEY);
-  } catch {
-    /* storage unavailable */
-  }
 }
 
 const INPUT_HISTORY_KEY = "pi-webui:input-history";
@@ -384,6 +378,46 @@ function send(payload) {
   }
 }
 
+function setComposerBlocked(blocked) {
+  composer.classList.toggle("blocked", blocked);
+  input.disabled = blocked;
+  sendButton.disabled = blocked;
+}
+
+function handleInvalidUrlState(payload) {
+  invalidUrlState = payload || {};
+  setComposerBlocked(true);
+  currentSessionState = null;
+  csResetHistory(chatState, []);
+  csSetError(chatState, invalidUrlState.message || "Invalid URL state");
+  chatState.streamExtras.push(invalidUrlStateToChatItem(invalidUrlState));
+  renderLog();
+  renderStatusBar();
+}
+
+function syncUrlForCommandResult(command, data) {
+  if (command === "prompt") {
+    urlState.promoteAcceptedDisposablePrompt(currentSessionState?.sessionFile);
+    return;
+  }
+  if (command === "new_session" || command === "slash:new") {
+    if (typeof data?.cwd === "string") urlState.syncDisposableCwd(data.cwd);
+    return;
+  }
+  if (command === "slash:cwd" || command === "slash:workspace") {
+    if (typeof data?.cwd === "string") urlState.syncDisposableCwd(data.cwd);
+    return;
+  }
+  if (
+    command === "slash:resume" ||
+    command === "slash:import" ||
+    command === "slash:clone" ||
+    command === "slash:fork"
+  ) {
+    urlState.syncDurableSession(currentSessionState?.sessionFile, { allowFromDisposable: true });
+  }
+}
+
 function isLogAtBottom() {
   return log.scrollHeight - log.scrollTop - log.clientHeight < 40;
 }
@@ -444,11 +478,24 @@ function reconcileBlocks(body, blocks, prevBlocks, { highlightText }) {
   reconcileChildrenInPlace(body, desired);
 }
 
-function buildMessageElement(kind, title, blocks, { highlight = true } = {}) {
+function buildMessageElement(kind, title, blocks, { highlight = true, actions = [] } = {}) {
   const el = document.createElement("section");
   el.className = `message ${kind}`;
   el.innerHTML = `<h3>${escapeHtml(title)}</h3><div class="message-body"></div>`;
   reconcileBlocks(el.querySelector(".message-body"), blocks, null, { highlightText: highlight });
+  if (actions.length > 0) {
+    const actionWrap = document.createElement("div");
+    actionWrap.className = "message-actions";
+    for (const action of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "message-action";
+      button.dataset.action = action.id;
+      button.textContent = action.label;
+      actionWrap.appendChild(button);
+    }
+    el.appendChild(actionWrap);
+  }
   return el;
 }
 
@@ -523,7 +570,7 @@ function renderLog() {
       const cached = extraEls.get(item);
       const isLive = liveItems.has(item);
       if (!cached) {
-        el = buildMessageElement(item.kind, item.title, item.blocks, { highlight: !isLive });
+        el = buildMessageElement(item.kind, item.title, item.blocks, { highlight: !isLive, actions: item.actions || [] });
         extraEls.set(item, {
           el,
           blocks: item.blocks,
@@ -624,8 +671,7 @@ function handleSessionEvent(event) {
 }
 
 function connect() {
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const url = `${protocol}://${location.host}/ws`;
+  const url = urlState.webSocketUrl();
   logger.info("ws connecting", { url });
   socket = new WebSocket(url);
 
@@ -634,7 +680,7 @@ function connect() {
     // Tell the server where our event-log cursor is. If it can replay missed
     // events, we keep all streamed UI state. Otherwise it'll send a
     // session_reset followed by a fresh bootstrap.
-    send({ type: "ready", lastSeq, sessionFile: loadStoredSessionFile() });
+    send({ type: "ready", lastSeq });
   });
 
   socket.addEventListener("message", (message) => {
@@ -642,8 +688,11 @@ function connect() {
 
     switch (packet.type) {
       case "connected":
+        invalidUrlState = null;
+        setComposerBlocked(false);
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
+        urlState.canonicalizeDisposableCwd(packet.payload.cwd);
         logger.info("connected", {
           cwd: packet.payload.cwd,
           agentDir: packet.payload.agentDir,
@@ -671,7 +720,7 @@ function connect() {
           });
         }
         currentSessionState = next;
-        saveStoredSessionFile(extractSessionFileFromState(next));
+        urlState.syncDurableSession(next?.sessionFile);
         renderStatusBar();
         return;
       }
@@ -712,8 +761,12 @@ function connect() {
           csSetError(chatState, msg);
           renderStatusBar();
         } else {
+          syncUrlForCommandResult(packet.payload.command, packet.payload.data);
           handleSlashResult(packet.payload.data);
         }
+        return;
+      case "invalid_url_state":
+        handleInvalidUrlState(packet.payload);
         return;
       case "prompt_preflight":
         if (!packet.payload.success) {
@@ -1036,7 +1089,7 @@ function showSessionPicker(payload) {
   openModal(sessionsForScope(activeScope).map(itemForSession), {
     emptyMessage: emptyMessageForScope(),
     onSelect: (item) => {
-      send({ type: "slash_command", name: "resume", arg: item.path });
+      urlState.navigateToSession(item.path);
     },
   });
   setModalHeaderAffordance(scopeControl);
@@ -1822,6 +1875,22 @@ input.addEventListener("blur", () => {
 });
 
 log.addEventListener("click", async (event) => {
+  const actionBtn = event.target.closest?.(".message-action");
+  if (actionBtn && log.contains(actionBtn)) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!invalidUrlState) return;
+    const decision = recoveryActionForInvalidUrlState(actionBtn.dataset.action, invalidUrlState);
+    if (decision.kind === "navigate-cwd") {
+      urlState.navigateToCwd(decision.cwd);
+      return;
+    }
+    if (decision.kind === "choose-session") {
+      showSessionPicker({ currentSessionFile: null, sessions: decision.sessions });
+    }
+    return;
+  }
+
   // Toggle button — switch between text and diff views.
   const toggleBtn = event.target.closest?.(".toggle-btn");
   if (toggleBtn && log.contains(toggleBtn)) {
@@ -1994,6 +2063,7 @@ window.addEventListener("drop", (event) => {
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (invalidUrlState) return;
   if (chatState.isRunning) {
     logger.info("abort sent");
     send({ type: "abort" });
@@ -2041,6 +2111,7 @@ composer.addEventListener("submit", (event) => {
   pendingImages.length = 0;
   renderAttachments();
   logger.info("prompt sent", { length: message.length, images: images.length });
+  urlState.markDisposablePromptSent();
   appendOptimisticUserMessage(message, images);
   send({ type: "prompt", message, images });
 });

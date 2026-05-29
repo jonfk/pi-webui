@@ -265,6 +265,18 @@ body.drag-active .composer-wrapper {
   border: none;
 }
 
+.composer.blocked {
+  opacity: 0.65;
+}
+
+.composer.blocked::before {
+  color: var(--error);
+}
+
+.composer.blocked textarea {
+  color: var(--muted);
+}
+
 .icon-button {
   display: inline-flex;
   align-items: center;
@@ -404,10 +416,37 @@ body.drag-active .composer-wrapper {
   color: var(--error);
 }
 
+.message.invalid-url-state h3 {
+  color: var(--error);
+}
+
+.message.invalid-url-state h3::before {
+  color: var(--error);
+}
+
 .message-body {
   word-break: break-word;
   padding-left: 1rem;
   border-left: 1px solid var(--border);
+}
+
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-left: 1rem;
+  margin-top: 0.6rem;
+}
+
+.message-actions button {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+
+.message-actions button:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .message.assistant > .message-body {
