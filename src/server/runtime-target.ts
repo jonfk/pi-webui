@@ -8,8 +8,8 @@ import { validateSessionPointer } from "./url-session-startup.js";
 export type RuntimeTarget =
   | { kind: "cwd_required"; message: string; value?: string }
   | { kind: "invalid_url"; invalidKind: InvalidUrlStateKind; value: string | null; message: string }
-  | { kind: "cwd"; cwd: string; source: "url" | "lastCwd" }
-  | { kind: "session"; sessionPath: string; cwd: string; source: "url" };
+  | { kind: "cwd"; cwd: string; source: "url" | "lastCwd" | "recovery" }
+  | { kind: "session"; sessionPath: string; cwd: string; source: "url" | "recovery" };
 
 type ValidRuntimeTarget = Extract<RuntimeTarget, { kind: "cwd" | "session" }>;
 

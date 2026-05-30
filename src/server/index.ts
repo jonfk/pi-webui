@@ -58,6 +58,13 @@ import {
   resolveRuntimeTarget,
   runtimeSessionManagerForTarget,
 } from "./runtime-target.js";
+import {
+  listAllRecoverySessions,
+  listRecentRecoveryCwds,
+  listRecoveryDir,
+  selectRecoveryCwd,
+  selectRecoverySession,
+} from "./runtime-free-recovery.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -557,7 +564,10 @@ const SLASH_HANDLERS = {
     const target = String(arg || "").trim();
     if (target) {
       const resolved = validateCwdTarget(target);
-      if (resolved === ctrl.runtime.cwd) return { cwd: resolved, unchanged: true };
+      if (resolved === ctrl.runtime.cwd) {
+        setLastCwd(agentDir, resolved);
+        return { cwd: resolved, unchanged: true };
+      }
       await ctrl.switchCwd(resolved);
       return { cwd: resolved };
     }
@@ -675,19 +685,36 @@ class NativePiSessionController {
     });
 
     if (target.kind === "invalid_url") {
-      const payload = invalidUrlPayloadForTarget(target);
+      const payload = {
+        ...invalidUrlPayloadForTarget(target),
+        slashCommands: this.collectNoRuntimeSlashCommands(),
+      };
       this.startupBlock = { kind: "invalid_url", message: payload.message };
       sendJson(this.ws, { type: "invalid_url_state", payload });
       return;
     }
 
     if (target.kind === "cwd_required") {
-      const payload = cwdRequiredPayloadForTarget(target);
+      const payload = {
+        ...cwdRequiredPayloadForTarget(target),
+        slashCommands: this.collectNoRuntimeSlashCommands(),
+      };
       this.startupBlock = { kind: "cwd_required", message: payload.message };
       sendJson(this.ws, { type: "cwd_required", payload });
       return;
     }
 
+    await this.startRuntimeForTarget(target);
+    this.sendConnected();
+    // Bootstrap is now driven by the client's `ready` message — they tell us
+    // their lastSeq and we either replay missed events or send a reset +
+    // fresh bootstrap. This lets reconnecting clients keep their UI state
+    // when the buffer covers the gap (cross-WS replay still requires the
+    // shared-controller refactor; today the buffer is per-WS so a reconnect
+    // always falls through to reset, but the wire protocol is in place).
+  }
+
+  async startRuntimeForTarget(target) {
     this.runtime = await createAgentSessionRuntime(createRuntime, {
       cwd: target.cwd,
       agentDir,
@@ -696,7 +723,9 @@ class NativePiSessionController {
     assertRuntimeMatchesTarget({ target, runtimeCwd: this.runtime.cwd });
 
     await this.bindSession();
+  }
 
+  sendConnected() {
     sendJson(this.ws, {
       type: "connected",
       payload: {
@@ -707,12 +736,6 @@ class NativePiSessionController {
         slashCommands: this.collectSlashCommands(),
       },
     });
-    // Bootstrap is now driven by the client's `ready` message — they tell us
-    // their lastSeq and we either replay missed events or send a reset +
-    // fresh bootstrap. This lets reconnecting clients keep their UI state
-    // when the buffer covers the gap (cross-WS replay still requires the
-    // shared-controller refactor; today the buffer is per-WS so a reconnect
-    // always falls through to reset, but the wire protocol is in place).
   }
 
   async switchCwd(newCwd) {
@@ -996,6 +1019,18 @@ class NativePiSessionController {
     return commands;
   }
 
+  collectNoRuntimeSlashCommands() {
+    return [
+      {
+        name: "cwd",
+        description: WEBUI_SLASH_COMMANDS.cwd.description,
+        source: "webui",
+        supported: true,
+        argumentHint: WEBUI_SLASH_COMMANDS.cwd.argumentHint,
+      },
+    ];
+  }
+
   // Tell the client to discard any streamed UI state. Sent before a fresh
   // bootstrap on cold start, session switch, or replay miss.
   sendSessionReset() {
@@ -1037,7 +1072,6 @@ class NativePiSessionController {
   async runCommand(command, handler) {
     try {
       const data = await handler();
-      setLastCwd(agentDir, this.runtime.cwd);
       sendJson(this.ws, { type: "command_result", payload: { command, ok: true, data } });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1051,6 +1085,8 @@ class NativePiSessionController {
 
     if (this.startupBlock) {
       if (payload?.type === "ready") return;
+      const handled = await this.handleRuntimeFreeRecovery(payload);
+      if (handled) return;
       sendJson(this.ws, {
         type: "command_result",
         payload: {
@@ -1258,6 +1294,128 @@ class NativePiSessionController {
           payload: { command: payload?.type || "unknown", ok: false, error: "Unknown command" },
         });
     }
+  }
+
+  async handleRuntimeFreeRecovery(payload) {
+    switch (payload?.type) {
+      case "list_all_sessions": {
+        sendJson(this.ws, {
+          type: "recovery_result",
+          payload: {
+            request: "list_all_sessions",
+            data: { sessions: await listAllRecoverySessions() },
+          },
+        });
+        return true;
+      }
+
+      case "list_recent_cwds": {
+        sendJson(this.ws, {
+          type: "recovery_result",
+          payload: {
+            request: "list_recent_cwds",
+            data: {
+              homeDir: HOME_DIR,
+              currentCwd: "",
+              cwds: await listRecentRecoveryCwds({ agentDir, policy: cwdPolicy }),
+            },
+          },
+        });
+        return true;
+      }
+
+      case "list_dir": {
+        const reqPath = String(payload.path || "").trim();
+        try {
+          const result = listRecoveryDir({ path: reqPath, policy: cwdPolicy });
+          sendJson(this.ws, { type: "list_dir_result", payload: { request: reqPath, ...result } });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sendJson(this.ws, { type: "list_dir_result", payload: { request: reqPath, error: message } });
+        }
+        return true;
+      }
+
+      case "select_cwd": {
+        const command = "select_cwd";
+        const result = selectRecoveryCwd({
+          cwd: String(payload.cwd || "").trim(),
+          policy: cwdPolicy,
+        });
+        if (result.ok === false) {
+          sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: result.error } });
+          return true;
+        }
+        await this.recoverRuntime(command, result.target);
+        return true;
+      }
+
+      case "select_session": {
+        const command = "select_session";
+        const result = selectRecoverySession({
+          sessionPath: String(payload.sessionPath || "").trim(),
+          sessionDir,
+          policy: cwdPolicy,
+        });
+        if (result.ok === false) {
+          sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: result.error } });
+          return true;
+        }
+        await this.recoverRuntime(command, result.target);
+        return true;
+      }
+
+      case "slash_command": {
+        const name = String(payload.name || "").trim();
+        if (name !== "cwd") return false;
+        const arg = String(payload.arg || "").trim();
+        if (!arg) {
+          sendJson(this.ws, {
+            type: "recovery_result",
+            payload: {
+              request: "list_recent_cwds",
+              data: {
+                homeDir: HOME_DIR,
+                currentCwd: "",
+                cwds: await listRecentRecoveryCwds({ agentDir, policy: cwdPolicy }),
+              },
+            },
+          });
+          return true;
+        }
+        const result = selectRecoveryCwd({ cwd: arg, policy: cwdPolicy });
+        if (result.ok === false) {
+          sendJson(this.ws, {
+            type: "command_result",
+            payload: { command: "slash:cwd", ok: false, error: result.error },
+          });
+          return true;
+        }
+        await this.recoverRuntime("slash:cwd", result.target);
+        return true;
+      }
+
+      default:
+        return false;
+    }
+  }
+
+  async recoverRuntime(command, target) {
+    await this.startRuntimeForTarget(target);
+    setLastCwd(agentDir, this.runtime.cwd);
+    this.startupBlock = null;
+    this.sendConnected();
+    await this.sendBootstrap({ reset: true });
+    sendJson(this.ws, {
+      type: "command_result",
+      payload: {
+        command,
+        ok: true,
+        data: target.kind === "session"
+          ? { sessionPath: target.sessionPath, cwd: target.cwd }
+          : { cwd: target.cwd },
+      },
+    });
   }
 
   async close() {

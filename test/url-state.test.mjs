@@ -167,6 +167,20 @@ test("URL transition intent promotes durable session commands after command succ
   assert.equal(location.href, "http://localhost/?session=%2Ftmp%2Fresumed.jsonl");
 });
 
+test("recovery target commands update URL state from command data", () => {
+  const cwd = makeTracker("http://localhost/?session=%2Ftmp%2Fbad.jsonl");
+  cwd.state.observeCommandStarted("select_cwd");
+  cwd.state.observeCommandSucceeded("select_cwd", { cwd: "/work/project" });
+  assert.deepEqual(cwd.calls.map((c) => c[0]), ["pushState"]);
+  assert.equal(cwd.location.href, "http://localhost/?cwd=%2Fwork%2Fproject");
+
+  const session = makeTracker("http://localhost/?cwd=%2Fwork");
+  session.state.observeCommandStarted("select_session");
+  session.state.observeCommandSucceeded("select_session", { sessionPath: "/tmp/recovered.jsonl" });
+  assert.deepEqual(session.calls.map((c) => c[0]), ["pushState"]);
+  assert.equal(session.location.href, "http://localhost/?session=%2Ftmp%2Frecovered.jsonl");
+});
+
 test("installPopstateReload registers one Back/Forward reload handler", () => {
   const tracker = makeTracker("http://localhost/?cwd=%2Fwork");
   tracker.state.installPopstateReload();

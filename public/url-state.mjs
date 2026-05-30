@@ -140,6 +140,12 @@ export function createBrowserUrlState({ location, history, reload, addEventListe
         return;
       }
       if (intent === "session") {
+        if (typeof data?.sessionPath === "string") {
+          const state = this.current();
+          if (state.kind === "session" && state.sessionFile === data.sessionPath) return;
+          push(makeSessionUrl(data.sessionPath, location.href));
+          return;
+        }
         this.syncDurableSession(latestSessionFile, { allowFromCwdPointer: true });
       }
     },
@@ -179,6 +185,7 @@ function absoluteBase(href) {
 function urlTransitionIntent(command) {
   if (
     command === "new_session" ||
+    command === "select_cwd" ||
     command === "slash:new" ||
     command === "slash:cwd" ||
     command === "slash:workspace"
@@ -186,6 +193,7 @@ function urlTransitionIntent(command) {
     return "cwd";
   }
   if (
+    command === "select_session" ||
     command === "switch_session" ||
     command === "slash:resume" ||
     command === "slash:import" ||

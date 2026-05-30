@@ -21,6 +21,7 @@ import {
   setHistory as csSetHistory,
   resetHistory as csResetHistory,
   setError as csSetError,
+  clearError as csClearError,
   selectItems as csSelectItems,
 } from "./chat-state.mjs";
 import { dispatchSessionEvent } from "./session-dispatch.mjs";
@@ -62,6 +63,7 @@ let slashIndex = 0;
 // `ready` so the server can replay missed events without a full reset.
 let lastSeq = null;
 let invalidUrlState = null;
+let recoveryState = null;
 let startupBlocked = false;
 urlState.installPopstateReload();
 
@@ -394,8 +396,10 @@ function setComposerBlocked(blocked) {
 
 function handleInvalidUrlState(payload) {
   invalidUrlState = payload || {};
+  recoveryState = { kind: "invalid_url", payload: invalidUrlState };
   startupBlocked = true;
   setComposerBlocked(true);
+  slashCommands = payload?.slashCommands || [];
   currentSessionState = null;
   csResetHistory(chatState, []);
   csSetError(chatState, invalidUrlState.message || "Invalid URL state");
@@ -406,14 +410,32 @@ function handleInvalidUrlState(payload) {
 
 function handleCwdRequired(payload) {
   invalidUrlState = null;
+  recoveryState = { kind: "cwd_required", payload: payload || {} };
   startupBlocked = true;
   setComposerBlocked(true);
+  slashCommands = payload?.slashCommands || [];
   currentSessionState = null;
   csResetHistory(chatState, []);
   csSetError(chatState, payload?.message || "Choose a working directory to start pi-webui.");
   chatState.streamExtras.push(cwdRequiredToChatItem(payload || {}));
   renderLog();
   renderStatusBar();
+}
+
+function handleRecoveryResult(payload) {
+  const request = payload?.request;
+  const data = payload?.data || {};
+  if (request === "list_recent_cwds") {
+    showCwdPicker({ ...data, noRuntime: startupBlocked });
+    return;
+  }
+  if (request === "list_all_sessions") {
+    showSessionPicker({
+      currentSessionFile: null,
+      sessions: data.sessions || { allProjects: [] },
+      noRuntime: startupBlocked,
+    });
+  }
 }
 
 function syncUrlForCommandResult(command, data) {
@@ -690,12 +712,15 @@ function connect() {
 
     switch (packet.type) {
       case "connected":
+        const wasStartupBlocked = startupBlocked;
         invalidUrlState = null;
+        recoveryState = null;
         startupBlocked = false;
+        if (wasStartupBlocked) csClearError(chatState);
         setComposerBlocked(false);
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
-        urlState.canonicalizeCwdPointer(packet.payload.cwd);
+        if (!wasStartupBlocked) urlState.canonicalizeCwdPointer(packet.payload.cwd);
         logger.info("connected", {
           cwd: packet.payload.cwd,
           agentDir: packet.payload.agentDir,
@@ -768,6 +793,9 @@ function connect() {
           syncUrlForCommandResult(packet.payload.command, packet.payload.data);
           handleSlashResult(packet.payload.data);
         }
+        return;
+      case "recovery_result":
+        handleRecoveryResult(packet.payload);
         return;
       case "invalid_url_state":
         handleInvalidUrlState(packet.payload);
@@ -1017,7 +1045,8 @@ function formatRelativeTime(iso) {
 }
 
 function showSessionPicker(payload) {
-  let activeScope = "currentProject";
+  const noRuntime = payload.noRuntime === true;
+  let activeScope = noRuntime ? "allProjects" : "currentProject";
   const currentProject = payload.sessions?.currentProject || [];
   const allProjects = payload.sessions?.allProjects || [];
 
@@ -1096,14 +1125,17 @@ function showSessionPicker(payload) {
   openModal(sessionsForScope(activeScope).map(itemForSession), {
     emptyMessage: emptyMessageForScope(),
     onSelect: (item) => {
-      urlState.navigateToSession(item.path);
+      if (noRuntime) send({ type: "select_session", sessionPath: item.path });
+      else urlState.navigateToSession(item.path);
     },
   });
-  setModalHeaderAffordance(scopeControl);
+  if (!noRuntime) setModalHeaderAffordance(scopeControl);
   modalInputOverride = renderScope;
-  modalTabHandler = () => {
-    setScope(activeScope === "currentProject" ? "allProjects" : "currentProject");
-  };
+  modalTabHandler = noRuntime
+    ? null
+    : () => {
+        setScope(activeScope === "currentProject" ? "allProjects" : "currentProject");
+      };
 }
 
 function renderStatusBar() {
@@ -1422,7 +1454,8 @@ async function handleSlashResult(data) {
 function submitCwd(target) {
   const arg = String(target || "").trim();
   if (!arg) return;
-  send({ type: "slash_command", name: "cwd", arg });
+  if (startupBlocked) send({ type: "select_cwd", cwd: arg });
+  else send({ type: "slash_command", name: "cwd", arg });
 }
 
 function expandTildeClient(p, home) {
@@ -1886,14 +1919,10 @@ log.addEventListener("click", async (event) => {
   if (actionBtn && log.contains(actionBtn)) {
     event.preventDefault();
     event.stopPropagation();
-    if (!invalidUrlState) return;
-    const decision = recoveryActionForInvalidUrlState(actionBtn.dataset.action, invalidUrlState);
-    if (decision.kind === "navigate-cwd") {
-      urlState.navigateToCwd(decision.cwd);
-      return;
-    }
-    if (decision.kind === "choose-session") {
-      showSessionPicker({ currentSessionFile: null, sessions: decision.sessions });
+    if (!recoveryState) return;
+    const decision = recoveryActionForInvalidUrlState(actionBtn.dataset.action, recoveryState.payload);
+    if (decision.kind === "request") {
+      send({ type: decision.request });
     }
     return;
   }

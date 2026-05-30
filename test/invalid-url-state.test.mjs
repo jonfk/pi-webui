@@ -30,7 +30,10 @@ test("invalidUrlStateToChatItem uses message text and appends a missing path", (
 
 test("invalidUrlStateToChatItem exposes explicit recovery actions", () => {
   const item = invalidUrlStateToChatItem({ kind: "session", message: "bad" });
-  assert.deepEqual(item.actions, []);
+  assert.deepEqual(item.actions, [
+    { id: "choose-cwd", label: "Choose cwd" },
+    { id: "choose-session", label: "Choose session" },
+  ]);
 });
 
 test("cwdRequiredToChatItem renders a blocked-startup message", () => {
@@ -40,9 +43,20 @@ test("cwdRequiredToChatItem renders a blocked-startup message", () => {
   });
   assert.equal(item.title, "Choose a working directory");
   assert.equal(item.blocks[0].text, "Saved working directory is unavailable\n\nPath: /tmp/deleted");
-  assert.deepEqual(item.actions, []);
+  assert.deepEqual(item.actions, [
+    { id: "choose-cwd", label: "Choose cwd" },
+    { id: "choose-session", label: "Choose session" },
+  ]);
 });
 
-test("recoveryActionForInvalidUrlState rejects unavailable recovery actions", () => {
-  assert.throws(() => recoveryActionForInvalidUrlState("new-session", {}), /Unknown invalid URL recovery action/);
+test("recoveryActionForInvalidUrlState maps and rejects recovery actions", () => {
+  assert.deepEqual(recoveryActionForInvalidUrlState("choose-cwd", {}), {
+    kind: "request",
+    request: "list_recent_cwds",
+  });
+  assert.deepEqual(recoveryActionForInvalidUrlState("choose-session", {}), {
+    kind: "request",
+    request: "list_all_sessions",
+  });
+  assert.throws(() => recoveryActionForInvalidUrlState("new-session", {}), /Unknown recovery action/);
 });

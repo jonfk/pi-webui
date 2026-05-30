@@ -7,7 +7,7 @@ export function invalidUrlStateToChatItem(payload = {}) {
     kind: "invalid-url-state",
     title,
     blocks: [{ type: "text", text }],
-    actions: [],
+    actions: recoveryActions(),
   };
 }
 
@@ -16,12 +16,21 @@ export function cwdRequiredToChatItem(payload = {}) {
     kind: "cwd-required",
     title: "Choose a working directory",
     blocks: [{ type: "text", text: messageText(payload) || "Choose a working directory to start pi-webui." }],
-    actions: [],
+    actions: recoveryActions(),
   };
 }
 
 export function recoveryActionForInvalidUrlState(action, payload = {}) {
-  throw new Error(`Unknown invalid URL recovery action: ${action}`);
+  if (action === "choose-cwd") return { kind: "request", request: "list_recent_cwds" };
+  if (action === "choose-session") return { kind: "request", request: "list_all_sessions" };
+  throw new Error(`Unknown recovery action: ${action}`);
+}
+
+function recoveryActions() {
+  return [
+    { id: "choose-cwd", label: "Choose cwd" },
+    { id: "choose-session", label: "Choose session" },
+  ];
 }
 
 function messageText(payload) {
