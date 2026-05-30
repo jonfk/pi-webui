@@ -195,7 +195,6 @@ function urlTransitionIntent(command) {
   if (
     command === "select_session" ||
     command === "switch_session" ||
-    command === "slash:resume" ||
     command === "slash:import" ||
     command === "slash:clone" ||
     command === "slash:fork"

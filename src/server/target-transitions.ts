@@ -14,7 +14,6 @@ export type CwdTransitionSource =
 
 export type SessionTransitionSource =
   | "import"
-  | "resume"
   | "picker"
   | "switch_session";
 

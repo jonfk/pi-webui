@@ -128,10 +128,10 @@ test("session transition resolves header cwd and rejects bad sessions before run
     sessionPath,
     sessionDir: fixture.sessionDir,
     policy: fixture.policy,
-    source: "resume",
+    source: "picker",
   }), {
     kind: "session",
-    source: "resume",
+    source: "picker",
     sessionPath,
     cwd: fixture.otherCwd,
   });
@@ -146,7 +146,7 @@ test("session transition resolves header cwd and rejects bad sessions before run
     sessionPath: join(fixture.root, "missing.jsonl"),
     sessionDir: fixture.sessionDir,
     policy: fixture.policy,
-    source: "resume",
+    source: "switch_session",
   }), /path does not exist/);
 
   const outsideSession = join(fixture.root, "outside.jsonl");
@@ -155,7 +155,7 @@ test("session transition resolves header cwd and rejects bad sessions before run
     sessionPath: outsideSession,
     sessionDir: fixture.sessionDir,
     policy: fixture.policy,
-    source: "resume",
+    source: "switch_session",
   }), /path must be inside/);
 });
 

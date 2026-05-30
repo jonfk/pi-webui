@@ -155,16 +155,15 @@ test("URL transition intent suppresses transient session state before cwd comman
   assert.equal(location.href, "http://localhost/?cwd=%2Fwork%2Fproject");
 });
 
-test("URL transition intent promotes durable session commands after command success", () => {
+test("picker-only resume command does not change URL state", () => {
   const { state, calls, location } = makeTracker("http://localhost/?cwd=%2Fwork");
 
   state.observeCommandStarted("slash:resume");
-  state.observeSessionState({ sessionFile: "/tmp/resumed.jsonl" });
-  assert.equal(calls.length, 0);
+  state.observeSessionState({ sessionFile: "/tmp/current.jsonl" });
+  state.observeCommandSucceeded("slash:resume", { needsPicker: "session" });
 
-  state.observeCommandSucceeded("slash:resume", {});
-  assert.deepEqual(calls.map((c) => c[0]), ["pushState"]);
-  assert.equal(location.href, "http://localhost/?session=%2Ftmp%2Fresumed.jsonl");
+  assert.deepEqual(calls, []);
+  assert.equal(location.href, "http://localhost/?cwd=%2Fwork");
 });
 
 test("recovery target commands update URL state from command data", () => {

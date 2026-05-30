@@ -111,7 +111,7 @@ test("cancelled session target transitions leave target and persistence untouche
     kind: "session",
     sessionPath,
     cwd: "/tmp/other",
-    source: "resume",
+    source: "switch_session",
   });
 
   assert.deepEqual(result, { cancelled: true });

@@ -636,15 +636,7 @@ const SLASH_HANDLERS = {
   resume: async (ctrl, arg) => {
     const path = String(arg || "").trim();
     if (path) {
-      const transition = resolveSessionTransition({
-        sessionPath: path,
-        sessionDir,
-        policy: cwdPolicy,
-        source: "resume",
-      });
-      const result = await ctrl.applyTargetTransition(transition);
-      if (result.cancelled) return { cancelled: true };
-      return { sessionPath: transition.sessionPath, cwd: transition.cwd };
+      throw new Error("Usage: /resume");
     }
     return {
       needsPicker: "session",
