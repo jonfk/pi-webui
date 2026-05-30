@@ -40,6 +40,7 @@ import { createCustomOverlayHost } from "./ext-custom.mjs";
 import { routeInput } from "./route-input.mjs";
 import { createBrowserUrlState } from "./url-state.mjs";
 import {
+  cwdRequiredToChatItem,
   invalidUrlStateToChatItem,
   recoveryActionForInvalidUrlState,
 } from "./invalid-url-state.mjs";
@@ -61,6 +62,7 @@ let slashIndex = 0;
 // `ready` so the server can replay missed events without a full reset.
 let lastSeq = null;
 let invalidUrlState = null;
+let startupBlocked = false;
 urlState.installPopstateReload();
 
 // Track the visual viewport so the app shell shrinks when the mobile virtual
@@ -392,11 +394,24 @@ function setComposerBlocked(blocked) {
 
 function handleInvalidUrlState(payload) {
   invalidUrlState = payload || {};
+  startupBlocked = true;
   setComposerBlocked(true);
   currentSessionState = null;
   csResetHistory(chatState, []);
   csSetError(chatState, invalidUrlState.message || "Invalid URL state");
   chatState.streamExtras.push(invalidUrlStateToChatItem(invalidUrlState));
+  renderLog();
+  renderStatusBar();
+}
+
+function handleCwdRequired(payload) {
+  invalidUrlState = null;
+  startupBlocked = true;
+  setComposerBlocked(true);
+  currentSessionState = null;
+  csResetHistory(chatState, []);
+  csSetError(chatState, payload?.message || "Choose a working directory to start pi-webui.");
+  chatState.streamExtras.push(cwdRequiredToChatItem(payload || {}));
   renderLog();
   renderStatusBar();
 }
@@ -676,6 +691,7 @@ function connect() {
     switch (packet.type) {
       case "connected":
         invalidUrlState = null;
+        startupBlocked = false;
         setComposerBlocked(false);
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
@@ -755,6 +771,9 @@ function connect() {
         return;
       case "invalid_url_state":
         handleInvalidUrlState(packet.payload);
+        return;
+      case "cwd_required":
+        handleCwdRequired(packet.payload);
         return;
       case "prompt_preflight":
         if (!packet.payload.success) {
@@ -2051,7 +2070,7 @@ window.addEventListener("drop", (event) => {
 
 composer.addEventListener("submit", (event) => {
   event.preventDefault();
-  if (invalidUrlState) return;
+  if (startupBlocked) return;
   if (chatState.isRunning) {
     logger.info("abort sent");
     send({ type: "abort" });

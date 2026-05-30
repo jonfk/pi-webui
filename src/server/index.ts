@@ -44,7 +44,6 @@ import {
 } from "./cwd.js";
 import { listSerializedSessions } from "./session-info.js";
 import { parseServerUrlState } from "./url-state.js";
-import { resolveInitialUrlSession } from "./url-session-startup.js";
 import {
   addWorkspace,
   findWorkspace,
@@ -52,6 +51,13 @@ import {
   removeWorkspace,
   setLastCwd,
 } from "./workspace-store.js";
+import {
+  assertRuntimeMatchesTarget,
+  cwdRequiredPayloadForTarget,
+  invalidUrlPayloadForTarget,
+  resolveRuntimeTarget,
+  runtimeSessionManagerForTarget,
+} from "./runtime-target.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -175,12 +181,6 @@ async function collectRecentCwds() {
 }
 const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
 const sessionDir = process.env.PI_SESSION_DIR;
-
-function getInitialCwd() {
-  const registry = loadWorkspaceRegistry(agentDir);
-  if (!registry.lastCwd) return resolve(process.cwd());
-  return validateCwdTarget(registry.lastCwd);
-}
 
 function serializeWorkspace(workspace) {
   return {
@@ -646,7 +646,7 @@ class NativePiSessionController {
   constructor(ws, urlState) {
     this.ws = ws;
     this.urlState = urlState;
-    this.invalidUrlState = false;
+    this.startupBlock = null;
     this.runtime = undefined;
     this.unsubscribe = undefined;
     this.fileWatcher = undefined;
@@ -667,24 +667,33 @@ class NativePiSessionController {
   }
 
   async init() {
-    const defaultCwd = getInitialCwd();
-    const resolved = await resolveInitialUrlSession({
+    const target = await resolveRuntimeTarget({
       urlState: this.urlState,
-      defaultCwd,
+      agentDir,
       sessionDir,
       policy: cwdPolicy,
     });
-    if (resolved.kind === "invalid") {
-      this.invalidUrlState = true;
-      sendJson(this.ws, { type: "invalid_url_state", payload: resolved.payload });
+
+    if (target.kind === "invalid_url") {
+      const payload = invalidUrlPayloadForTarget(target);
+      this.startupBlock = { kind: "invalid_url", message: payload.message };
+      sendJson(this.ws, { type: "invalid_url_state", payload });
+      return;
+    }
+
+    if (target.kind === "cwd_required") {
+      const payload = cwdRequiredPayloadForTarget(target);
+      this.startupBlock = { kind: "cwd_required", message: payload.message };
+      sendJson(this.ws, { type: "cwd_required", payload });
       return;
     }
 
     this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: resolved.cwd,
+      cwd: target.cwd,
       agentDir,
-      sessionManager: resolved.sessionManager,
+      sessionManager: runtimeSessionManagerForTarget({ target, sessionDir }),
     });
+    assertRuntimeMatchesTarget({ target, runtimeCwd: this.runtime.cwd });
 
     await this.bindSession();
 
@@ -1040,14 +1049,14 @@ class NativePiSessionController {
   async handle(payload) {
     await this.ready;
 
-    if (this.invalidUrlState) {
+    if (this.startupBlock) {
       if (payload?.type === "ready") return;
       sendJson(this.ws, {
         type: "command_result",
         payload: {
           command: commandNameForInvalidState(payload),
           ok: false,
-          error: "URL state is invalid",
+          error: this.startupBlock.message,
         },
       });
       return;

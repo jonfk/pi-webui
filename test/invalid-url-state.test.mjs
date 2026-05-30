@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  cwdRequiredToChatItem,
   invalidUrlStateToChatItem,
   recoveryActionForInvalidUrlState,
 } from "../public/invalid-url-state.mjs";
@@ -29,26 +30,19 @@ test("invalidUrlStateToChatItem uses message text and appends a missing path", (
 
 test("invalidUrlStateToChatItem exposes explicit recovery actions", () => {
   const item = invalidUrlStateToChatItem({ kind: "session", message: "bad" });
-  assert.deepEqual(item.actions, [
-    { id: "new-session", label: "New session" },
-    { id: "choose-session", label: "Choose session" },
-  ]);
+  assert.deepEqual(item.actions, []);
 });
 
-test("recoveryActionForInvalidUrlState maps actions to navigation decisions", () => {
-  const sessions = { currentProject: [], allProjects: [] };
-  const payload = { defaultCwd: "/work", sessions };
-  assert.deepEqual(recoveryActionForInvalidUrlState("new-session", payload), {
-    kind: "navigate-cwd",
-    cwd: "/work",
+test("cwdRequiredToChatItem renders a blocked-startup message", () => {
+  const item = cwdRequiredToChatItem({
+    message: "Saved working directory is unavailable",
+    value: "/tmp/deleted",
   });
-  assert.deepEqual(recoveryActionForInvalidUrlState("choose-session", payload), {
-    kind: "choose-session",
-    sessions,
-  });
+  assert.equal(item.title, "Choose a working directory");
+  assert.equal(item.blocks[0].text, "Saved working directory is unavailable\n\nPath: /tmp/deleted");
+  assert.deepEqual(item.actions, []);
 });
 
-test("recoveryActionForInvalidUrlState preserves empty session lists", () => {
-  const payload = { defaultCwd: "/work", sessions: { currentProject: [], allProjects: [] } };
-  assert.deepEqual(recoveryActionForInvalidUrlState("choose-session", payload).sessions, payload.sessions);
+test("recoveryActionForInvalidUrlState rejects unavailable recovery actions", () => {
+  assert.throws(() => recoveryActionForInvalidUrlState("new-session", {}), /Unknown invalid URL recovery action/);
 });
