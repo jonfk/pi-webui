@@ -46,13 +46,11 @@ import { listSerializedSessions } from "./session-info.js";
 import { parseServerUrlState } from "./url-state.js";
 import {
   addWorkspace,
-  findWorkspace,
   loadWorkspaceRegistry,
   removeWorkspace,
   setLastCwd,
 } from "./workspace-store.js";
 import {
-  assertRuntimeMatchesTarget,
   cwdRequiredPayloadForTarget,
   invalidUrlPayloadForTarget,
   resolveRuntimeTarget,
@@ -62,9 +60,15 @@ import {
   listAllRecoverySessions,
   listRecentRecoveryCwds,
   listRecoveryDir,
-  selectRecoveryCwd,
-  selectRecoverySession,
 } from "./runtime-free-recovery.js";
+import {
+  resolveCwdTransition,
+  resolveSessionTransition,
+  resolveWorkspaceTransition,
+  shouldPersistLastCwd,
+  transitionFromStartupTarget,
+} from "./target-transitions.js";
+import { RuntimeTargetHost } from "./runtime-target-host.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -169,6 +173,13 @@ function validateCwdTarget(target) {
 
 function listDirectories(target) {
   return listDirectoriesWithPolicy(target, cwdPolicy);
+}
+
+function resolveCommandPath(path) {
+  if (path === "~") return HOME_DIR;
+  if (path.startsWith("~/")) return resolve(HOME_DIR, path.slice(2));
+  if (path.startsWith("file://")) return fileURLToPath(path);
+  return resolve(path);
 }
 
 async function collectRecentCwds() {
@@ -308,14 +319,10 @@ const WEBUI_SLASH_COMMANDS = {
 
 const SLASH_HANDLERS = {
   new: async (ctrl) => {
-    const result = await ctrl.runtime.newSession();
-    if (!result?.cancelled) {
-      await ctrl.bindSession();
-      setLastCwd(agentDir, ctrl.runtime.cwd);
-      await ctrl.sendBootstrap();
-      return { ...result, cwd: ctrl.runtime.cwd };
-    }
-    return result;
+    const transition = ctrl.resolveNewSessionTransition();
+    const result = await ctrl.applyTargetTransition(transition);
+    if (result.cancelled) return { cancelled: true };
+    return { cwd: transition.cwd };
   },
   compact: async (ctrl, arg) => {
     const result = await ctrl.session.compact(arg || undefined);
@@ -430,11 +437,19 @@ const SLASH_HANDLERS = {
   import: async (ctrl, arg) => {
     const path = String(arg || "").trim();
     if (!path) throw new Error("Usage: /import <path-to-jsonl>");
-    const result = await ctrl.runtime.importFromJsonl(path);
+    const importPath = resolveCommandPath(path);
+    resolveSessionTransition({
+      sessionPath: importPath,
+      sessionDir,
+      policy: cwdPolicy,
+      source: "import",
+    });
+    const result = await ctrl.runtime.importFromJsonl(importPath);
     if (!result?.cancelled) {
+      const target = ctrl.adoptCurrentSessionTarget({ persistLastCwd: false });
       await ctrl.bindSession();
-      setLastCwd(agentDir, ctrl.runtime.cwd);
       await ctrl.sendBootstrap();
+      return { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
     }
     return result;
   },
@@ -443,9 +458,11 @@ const SLASH_HANDLERS = {
     if (!leafId) throw new Error("Nothing to clone yet");
     const result = await ctrl.runtime.fork(leafId, { position: "at" });
     if (!result?.cancelled) {
+      ctrl.assertCurrentRuntimeMatchesSelectedTarget();
+      const target = ctrl.adoptCurrentSessionTarget({ persistLastCwd: false });
       await ctrl.bindSession();
-      setLastCwd(agentDir, ctrl.runtime.cwd);
       await ctrl.sendBootstrap();
+      return { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
     }
     return result;
   },
@@ -454,9 +471,11 @@ const SLASH_HANDLERS = {
     if (entryId) {
       const result = await ctrl.runtime.fork(entryId, { position: "before" });
       if (!result?.cancelled) {
+        ctrl.assertCurrentRuntimeMatchesSelectedTarget();
+        const target = ctrl.adoptCurrentSessionTarget({ persistLastCwd: false });
         await ctrl.bindSession();
-        setLastCwd(agentDir, ctrl.runtime.cwd);
         await ctrl.sendBootstrap();
+        return { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
       }
       return result;
     }
@@ -563,13 +582,14 @@ const SLASH_HANDLERS = {
   cwd: async (ctrl, arg) => {
     const target = String(arg || "").trim();
     if (target) {
-      const resolved = validateCwdTarget(target);
-      if (resolved === ctrl.runtime.cwd) {
-        setLastCwd(agentDir, resolved);
-        return { cwd: resolved, unchanged: true };
-      }
-      await ctrl.switchCwd(resolved);
-      return { cwd: resolved };
+      const transition = resolveCwdTransition({
+        cwd: target,
+        policy: cwdPolicy,
+        source: "slash_cwd",
+      });
+      const unchanged = ctrl.selectedTarget?.kind === "cwd" && ctrl.selectedTarget.cwd === transition.cwd;
+      await ctrl.applyTargetTransition(transition);
+      return { cwd: transition.cwd, ...(unchanged ? { unchanged: true } : {}) };
     }
     return {
       needsPicker: "cwd",
@@ -582,15 +602,18 @@ const SLASH_HANDLERS = {
     const target = String(arg || "").trim();
     const registry = loadWorkspaceRegistry(agentDir);
     if (target) {
-      const workspace = findWorkspace(registry, target);
-      if (!workspace) throw new Error(`workspace not found: ${target}`);
-      const resolved = validateCwdTarget(workspace.path);
-      if (resolved === ctrl.runtime.cwd) {
-        setLastCwd(agentDir, resolved);
-        return { workspace: serializeWorkspace(workspace), cwd: resolved, unchanged: true };
-      }
-      await ctrl.switchCwd(resolved);
-      return { workspace: serializeWorkspace(workspace), cwd: resolved };
+      const transition = resolveWorkspaceTransition({
+        selector: target,
+        agentDir,
+        policy: cwdPolicy,
+      });
+      const unchanged = ctrl.selectedTarget?.kind === "cwd" && ctrl.selectedTarget.cwd === transition.cwd;
+      await ctrl.applyTargetTransition(transition);
+      return {
+        workspace: serializeWorkspace(transition.workspace),
+        cwd: transition.cwd,
+        ...(unchanged ? { unchanged: true } : {}),
+      };
     }
     return {
       needsPicker: "workspace",
@@ -613,13 +636,15 @@ const SLASH_HANDLERS = {
   resume: async (ctrl, arg) => {
     const path = String(arg || "").trim();
     if (path) {
-      const result = await ctrl.runtime.switchSession(path);
-      if (!result?.cancelled) {
-        await ctrl.bindSession();
-        setLastCwd(agentDir, ctrl.runtime.cwd);
-        await ctrl.sendBootstrap();
-      }
-      return result;
+      const transition = resolveSessionTransition({
+        sessionPath: path,
+        sessionDir,
+        policy: cwdPolicy,
+        source: "resume",
+      });
+      const result = await ctrl.applyTargetTransition(transition);
+      if (result.cancelled) return { cancelled: true };
+      return { sessionPath: transition.sessionPath, cwd: transition.cwd };
     }
     return {
       needsPicker: "session",
@@ -657,7 +682,16 @@ class NativePiSessionController {
     this.ws = ws;
     this.urlState = urlState;
     this.startupBlock = null;
-    this.runtime = undefined;
+    this.runtimeHost = new RuntimeTargetHost({
+      createRuntimeForTarget: (target) => createAgentSessionRuntime(createRuntime, {
+        cwd: target.cwd,
+        agentDir,
+        sessionManager: runtimeSessionManagerForTarget({ target, sessionDir }),
+      }),
+      bindRuntime: () => this.bindSession(),
+      beforeSessionInvalidate: () => this.detachSessionBinding(),
+      persistLastCwd: (cwd) => setLastCwd(agentDir, cwd),
+    });
     this.unsubscribe = undefined;
     this.fileWatcher = undefined;
     this.watchedFile = undefined;
@@ -705,6 +739,10 @@ class NativePiSessionController {
     }
 
     await this.startRuntimeForTarget(target);
+    const startupTransition = transitionFromStartupTarget(target);
+    if (startupTransition && shouldPersistLastCwd(startupTransition)) {
+      setLastCwd(agentDir, startupTransition.cwd);
+    }
     this.sendConnected();
     // Bootstrap is now driven by the client's `ready` message — they tell us
     // their lastSeq and we either replay missed events or send a reset +
@@ -715,14 +753,7 @@ class NativePiSessionController {
   }
 
   async startRuntimeForTarget(target) {
-    this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: target.cwd,
-      agentDir,
-      sessionManager: runtimeSessionManagerForTarget({ target, sessionDir }),
-    });
-    assertRuntimeMatchesTarget({ target, runtimeCwd: this.runtime.cwd });
-
-    await this.bindSession();
+    await this.runtimeHost.start(target);
   }
 
   sendConnected() {
@@ -738,24 +769,54 @@ class NativePiSessionController {
     });
   }
 
-  async switchCwd(newCwd) {
-    logger.info("switching cwd", { from: this.runtime.cwd, to: newCwd });
+  resolveNewSessionTransition() {
+    if (!this.selectedTarget) throw new Error("No selected runtime target");
+    return resolveCwdTransition({
+      cwd: this.selectedTarget.cwd,
+      policy: cwdPolicy,
+      source: "new_session",
+    });
+  }
+
+  async applyTargetTransition(transition, options = {}) {
+    logger.info("applying target transition", {
+      kind: transition.kind,
+      cwd: transition.cwd,
+      source: transition.source,
+    });
+    const result = await this.runtimeHost.applyTransition(transition);
+    if (result.cancelled) return result;
+    if (options.sendConnected) this.sendConnected();
+    if (options.sendBootstrap !== false) {
+      await this.sendBootstrap({ reset: true });
+    }
+    return result;
+  }
+
+  adoptCurrentSessionTarget(options = {}) {
+    return this.runtimeHost.adoptCurrentSessionTarget(options);
+  }
+
+  assertCurrentRuntimeMatchesSelectedTarget() {
+    this.runtimeHost.assertCurrentRuntimeMatchesSelectedTarget();
+  }
+
+  get runtime() {
+    return this.runtimeHost.requireRuntime();
+  }
+
+  get selectedTarget() {
+    return this.runtimeHost.selectedTarget;
+  }
+
+  detachSessionBinding() {
     this.stopFileWatch();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-    try { await this.runtime?.dispose(); } catch { /* ignore */ }
-    this.runtime = await createAgentSessionRuntime(createRuntime, {
-      cwd: newCwd,
-      agentDir,
-      sessionManager: SessionManager.create(newCwd, sessionDir),
-    });
-    setLastCwd(agentDir, this.runtime.cwd);
-    await this.bindSession();
-    await this.sendBootstrap();
   }
 
   async bindSession() {
-    this.unsubscribe?.();
+    this.detachSessionBinding();
     const session = this.runtime.session;
     await session.bindExtensions({ uiContext: this.extUi.ui });
     this.unsubscribe = session.subscribe((event) => {
@@ -848,7 +909,7 @@ class NativePiSessionController {
   }
 
   startFileWatch() {
-    const sessionFile = this.runtime?.session?.sessionFile;
+    const sessionFile = this.runtimeHost.runtime?.session?.sessionFile;
     if (this.watchedFile === sessionFile) return;
     this.stopFileWatch();
     if (!sessionFile) return;
@@ -884,7 +945,7 @@ class NativePiSessionController {
   // instance. Skipped while we are streaming or otherwise busy — the next
   // external write will retrigger it.
   async refreshFromFile() {
-    const session = this.runtime?.session;
+    const session = this.runtimeHost.runtime?.session;
     const sessionFile = session?.sessionFile;
     if (!sessionFile) return;
     const ok = canRefreshNow({
@@ -902,10 +963,8 @@ class NativePiSessionController {
     this.refreshing = true;
     logger.info("external refresh begin", { sessionFile });
     try {
-      const result = await this.runtime.switchSession(sessionFile);
+      const result = await this.runtimeHost.refreshCurrentSessionFromFile({ persistLastCwd: true });
       if (!result?.cancelled) {
-        await this.bindSession();
-        setLastCwd(agentDir, this.runtime.cwd);
         await this.sendBootstrap();
       }
     } catch (error) {
@@ -1027,6 +1086,13 @@ class NativePiSessionController {
         source: "webui",
         supported: true,
         argumentHint: WEBUI_SLASH_COMMANDS.cwd.argumentHint,
+      },
+      {
+        name: "workspace",
+        description: WEBUI_SLASH_COMMANDS.workspace.description,
+        source: "webui",
+        supported: true,
+        argumentHint: WEBUI_SLASH_COMMANDS.workspace.argumentHint,
       },
     ];
   }
@@ -1163,14 +1229,10 @@ class NativePiSessionController {
       case "new_session":
         logger.info("new session requested");
         await this.runCommand("new_session", async () => {
-          const result = await this.runtime.newSession();
-          if (!result.cancelled) {
-            await this.bindSession();
-            setLastCwd(agentDir, this.runtime.cwd);
-            await this.sendBootstrap();
-            return { ...result, cwd: this.runtime.cwd };
-          }
-          return result;
+          const transition = this.resolveNewSessionTransition();
+          const result = await this.applyTargetTransition(transition);
+          if (result.cancelled) return { cancelled: true };
+          return { cwd: transition.cwd };
         });
         return;
 
@@ -1181,13 +1243,15 @@ class NativePiSessionController {
             throw new Error("sessionPath is required");
           }
           logger.info("switch session", { sessionPath });
-          const result = await this.runtime.switchSession(sessionPath);
-          if (!result.cancelled) {
-            await this.bindSession();
-            setLastCwd(agentDir, this.runtime.cwd);
-            await this.sendBootstrap();
-          }
-          return result;
+          const transition = resolveSessionTransition({
+            sessionPath,
+            sessionDir,
+            policy: cwdPolicy,
+            source: "switch_session",
+          });
+          const result = await this.applyTargetTransition(transition);
+          if (result.cancelled) return { cancelled: true };
+          return { sessionPath: transition.sessionPath, cwd: transition.cwd };
         });
         return;
 
@@ -1338,38 +1402,30 @@ class NativePiSessionController {
 
       case "select_cwd": {
         const command = "select_cwd";
-        const result = selectRecoveryCwd({
+        await this.runRuntimeFreeTransition(command, () => resolveCwdTransition({
           cwd: String(payload.cwd || "").trim(),
           policy: cwdPolicy,
-        });
-        if (result.ok === false) {
-          sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: result.error } });
-          return true;
-        }
-        await this.recoverRuntime(command, result.target);
+          source: "picker",
+        }));
         return true;
       }
 
       case "select_session": {
         const command = "select_session";
-        const result = selectRecoverySession({
+        await this.runRuntimeFreeTransition(command, () => resolveSessionTransition({
           sessionPath: String(payload.sessionPath || "").trim(),
           sessionDir,
           policy: cwdPolicy,
-        });
-        if (result.ok === false) {
-          sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: result.error } });
-          return true;
-        }
-        await this.recoverRuntime(command, result.target);
+          source: "picker",
+        }));
         return true;
       }
 
       case "slash_command": {
         const name = String(payload.name || "").trim();
-        if (name !== "cwd") return false;
+        if (name !== "cwd" && name !== "workspace") return false;
         const arg = String(payload.arg || "").trim();
-        if (!arg) {
+        if (!arg && name === "cwd") {
           sendJson(this.ws, {
             type: "recovery_result",
             payload: {
@@ -1383,15 +1439,35 @@ class NativePiSessionController {
           });
           return true;
         }
-        const result = selectRecoveryCwd({ cwd: arg, policy: cwdPolicy });
-        if (result.ok === false) {
+        if (!arg && name === "workspace") {
+          const registry = loadWorkspaceRegistry(agentDir);
           sendJson(this.ws, {
             type: "command_result",
-            payload: { command: "slash:cwd", ok: false, error: result.error },
+            payload: {
+              command: "slash:workspace",
+              ok: true,
+              data: {
+                needsPicker: "workspace",
+                currentCwd: "",
+                workspaces: registry.workspaces.map(serializeWorkspace),
+              },
+            },
           });
           return true;
         }
-        await this.recoverRuntime("slash:cwd", result.target);
+        if (name === "cwd") {
+          await this.runRuntimeFreeTransition("slash:cwd", () => resolveCwdTransition({
+            cwd: arg,
+            policy: cwdPolicy,
+            source: "slash_cwd",
+          }));
+          return true;
+        }
+        await this.runRuntimeFreeTransition("slash:workspace", () => resolveWorkspaceTransition({
+          selector: arg,
+          agentDir,
+          policy: cwdPolicy,
+        }));
         return true;
       }
 
@@ -1400,9 +1476,26 @@ class NativePiSessionController {
     }
   }
 
-  async recoverRuntime(command, target) {
-    await this.startRuntimeForTarget(target);
-    setLastCwd(agentDir, this.runtime.cwd);
+  async runRuntimeFreeTransition(command, resolveTransition) {
+    let transition;
+    try {
+      transition = resolveTransition();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: message } });
+      return;
+    }
+    try {
+      const result = await this.applyTargetTransition(transition, { sendBootstrap: false });
+      if (result.cancelled) {
+        sendJson(this.ws, { type: "command_result", payload: { command, ok: true, data: { cancelled: true } } });
+        return;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: message } });
+      return;
+    }
     this.startupBlock = null;
     this.sendConnected();
     await this.sendBootstrap({ reset: true });
@@ -1411,9 +1504,9 @@ class NativePiSessionController {
       payload: {
         command,
         ok: true,
-        data: target.kind === "session"
-          ? { sessionPath: target.sessionPath, cwd: target.cwd }
-          : { cwd: target.cwd },
+        data: transition.kind === "session"
+          ? { sessionPath: transition.sessionPath, cwd: transition.cwd }
+          : { cwd: transition.cwd },
       },
     });
   }
@@ -1423,7 +1516,7 @@ class NativePiSessionController {
       this.stopFileWatch();
       this.unsubscribe?.();
       this.extUi?.dispose();
-      await this.runtime?.dispose();
+      await this.runtimeHost.dispose();
     } catch {
       // Ignore shutdown errors.
     }

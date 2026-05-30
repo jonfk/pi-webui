@@ -1126,7 +1126,7 @@ function showSessionPicker(payload) {
     emptyMessage: emptyMessageForScope(),
     onSelect: (item) => {
       if (noRuntime) send({ type: "select_session", sessionPath: item.path });
-      else urlState.navigateToSession(item.path);
+      else send({ type: "switch_session", sessionPath: item.path });
     },
   });
   if (!noRuntime) setModalHeaderAffordance(scopeControl);

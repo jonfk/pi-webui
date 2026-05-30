@@ -48,6 +48,22 @@ _Avoid_: invalid session page, invalid session toast
 The browser-side intent that decides whether ordered session updates should become a **URL Session Pointer** or a **URL Cwd Pointer**.
 _Avoid_: raw session_state sync, URL side effect flag
 
+**Selected Runtime Target**:
+The server-side cwd or session target that pi-webui has committed as the authority for the current Pi runtime.
+_Avoid_: active cwd, current session storage
+
+**Runtime Target Host**:
+The server module that owns the **Selected Runtime Target** and applies target changes through either Pi SDK session replacement or direct runtime recreation.
+_Avoid_: transition helper, runtime switch utility
+
+**Target Transition Module**:
+The pure server module that resolves user or URL intent into validated cwd/session transitions before runtime mutation begins.
+_Avoid_: runtime switcher, controller helper
+
+**Session Replacement Adapter**:
+The boundary between pi-webui target intent and Pi SDK lifecycle methods such as session switch, new session, import, clone, and fork.
+_Avoid_: special case branch, lifecycle workaround
+
 ## Relationships
 
 - A **Slash Command Catalog** may include **Skill Commands** when pi skill commands are enabled.
@@ -60,6 +76,9 @@ _Avoid_: raw session_state sync, URL side effect flag
 - **New Session Cwd Mode** is selected by a **URL Cwd Pointer** and becomes a normal **URL Session Pointer** only after Pi accepts the first prompt.
 - An **Invalid Session Message** is shown instead of bootstrapping a fallback session when URL session or cwd state cannot be opened.
 - **URL Transition Intent** prevents transient `session_state` packets from creating browser history entries before command-specific URL policy runs.
+- A **Runtime Target Host** commits a **Selected Runtime Target** only after the underlying runtime operation succeeds.
+- A **Target Transition Module** validates target intent but does not mutate runtime state or persistence.
+- A **Session Replacement Adapter** preserves Pi lifecycle events when the Pi SDK already has a session replacement method.
 
 ## Example Dialogue
 
