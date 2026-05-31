@@ -34,7 +34,9 @@
     "build": "tsc && node -e \"require('fs').chmodSync('dist/server/index.js', 0o755)\"",
     "prepack": "npm run build",
     "start": "node dist/server/index.js",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prototype:at-file-parser": "node prototypes/at-file-text-parser-prototype-cli.mjs",
+    "prototype:at-file-parser:interactive": "node prototypes/at-file-text-parser-interactive-prototype-cli.mjs"
   },
   "publishConfig": {
     "access": "public"
