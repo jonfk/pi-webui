@@ -37,7 +37,8 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "prototype:at-file-parser": "node prototypes/at-file-text-parser-prototype-cli.mjs",
     "prototype:at-file-parser:interactive": "node prototypes/at-file-text-parser-interactive-prototype-cli.mjs",
-    "prototype:at-file-fd": "node prototypes/at-file-fd-wrapper-prototype-cli.mjs"
+    "prototype:at-file-fd": "node prototypes/at-file-fd-wrapper-prototype-cli.mjs",
+    "prototype:at-file-active-search": "node prototypes/one-active-search-controller-prototype-cli.mjs"
   },
   "publishConfig": {
     "access": "public"

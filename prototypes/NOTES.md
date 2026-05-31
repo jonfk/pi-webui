@@ -45,3 +45,33 @@ Verdict:
 - Production code should normalize `fd` output before appending directory slashes because `fd` may already emit directories with trailing `/`.
 - `~/` handling still needs either a controlled fake-home test or a manual smoke test before final production integration.
 - Next step: lift the validated module shape into `src/server/file-completion.ts` or delete this prototype once the production wrapper exists.
+
+## PROTOTYPE - One Active Search Per Websocket Notes
+
+Question: what state should a websocket controller keep so a new `file_completion_request` aborts the previous search, socket close aborts current work, and only the still-current `requestId` can emit `file_completion_result`?
+
+Run it with:
+
+```sh
+npm run prototype:at-file-active-search
+```
+
+Suggested driving sequence:
+
+```text
+r       start req-1
+] r     start req-2, aborting req-1
+f       try resolving the oldest still-pending search
+f       resolve req-2
+r c f   start req-3, close socket, then try resolving pending work
+```
+
+Verdict:
+
+- The production controller only needs one per-websocket slot: `{ sequence, requestId, prefix, abortController }`.
+- Starting a new request should abort and clear the old slot before creating the new slot.
+- Search completion should emit only when the saved slot object is still current, the signal is not aborted, and the websocket is still open.
+- Socket close should abort the active slot and prevent later requests/results.
+- A scripted overlap smoke test confirmed that replacing `req-1` with `req-2` only emits `req-2`.
+- A scripted close smoke test confirmed that closing the websocket aborts current work, suppresses late settlement, and ignores later requests.
+- Fill in the final decision after driving the prototype, then delete this terminal shell or lift the controller shape into `src/server/index.ts`.
