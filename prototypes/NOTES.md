@@ -75,3 +75,53 @@ Verdict:
 - A scripted overlap smoke test confirmed that replacing `req-1` with `req-2` only emits `req-2`.
 - A scripted close smoke test confirmed that closing the websocket aborts current work, suppresses late settlement, and ignores later requests.
 - Fill in the final decision after driving the prototype, then delete this terminal shell or lift the controller shape into `src/server/index.ts`.
+
+## PROTOTYPE - Websocket Contract Notes
+
+Question: can the browser and server exchange `file_completion_request` / `file_completion_result` packets while keeping one active search per websocket and ignoring stale result packets on the frontend?
+
+Run it with:
+
+```sh
+npm run prototype:at-file-ws-contract
+```
+
+Verdict:
+
+- The request/result contract shape is viable:
+  - request: `{ type: "file_completion_request", requestId, prefix }`
+  - result: `{ type: "file_completion_result", payload: { requestId, prefix, items } }`
+- The server integration can stay thin: parse the inbound packet, validate that it has a non-empty `requestId` and an `@` prefix, then delegate to the one-active-search controller.
+- A new request aborts the previous websocket-local search before starting the next one.
+- Only the current search emits a websocket result. The scripted overlap sends `req-1` for `@slow-src`, replaces it with `req-2` for `@src`, and the server emits only `req-2`.
+- The client still needs its own `currentRequestId` guard because stale packets can arrive from reconnects, future bugs, or reordered experiments; the prototype injects a synthetic stale `req-1` packet and the client ignores it.
+- Production wiring should put the server slot in `NativePiSessionController`, dispatch `file_completion_request` before the generic unknown-command branch, and route `file_completion_result` in `public/app.js` to the eventual `file-completion-controller.mjs`.
+
+## PROTOTYPE - Frontend Controller Integration Notes
+
+Question: can a separate file completion controller run before existing slash/history/submit key handling without refactoring slash completion?
+
+Run it with:
+
+```sh
+npm run prototype:at-file-frontend
+```
+
+Suggested driving sequence:
+
+```text
+1       load "please inspect @src", flush request, deliver result
+↓ Tab   move file selection and apply it
+2 Tab   load "/mo" and verify slash completion still owns Tab
+3 Enter load "/mo @src", deliver file results, verify Enter applies file completion instead of submitting
+s       inject a stale file result and verify it is ignored
+```
+
+Verdict placeholder:
+
+- The integration shape to validate is still `if (fileCompletionController.handleKeydown(event)) return;` before the existing slash/history/submit handling in `public/app.js`.
+- File completion state stays separate from slash state: the prototype keeps independent menu state, selected indexes, pending request id, and request/result lifecycle.
+- The file controller should own `ArrowUp`, `ArrowDown`, `Tab`, `Enter`, and `Escape` only while its menu is open; otherwise current slash completion, history navigation, and prompt submit behavior can stay in place.
+- The frontend should keep a `currentRequestId` and also re-check the current textarea `@` context before opening the menu from a result.
+- Reusing the existing slash menu styling is probably enough for the prototype, but production should use a separate element such as `#file-completion-menu` so slash and file state cannot fight over one DOM node.
+- Fill in the final decision after driving the scenarios by hand, then delete this prototype or lift the controller shape into `public/file-completion-controller.mjs`.
