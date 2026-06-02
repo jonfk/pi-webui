@@ -69,6 +69,8 @@ import {
   transitionFromStartupTarget,
 } from "./target-transitions.js";
 import { RuntimeTargetHost } from "./runtime-target-host.js";
+import { searchFileCompletions } from "./file-completion.js";
+import { FileCompletionSearchController } from "./file-completion-controller.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -691,6 +693,18 @@ class NativePiSessionController {
     this.refreshTimer = undefined;
     this.refreshing = false;
     this.eventLog = createEventLog();
+    this.fileCompletion = new FileCompletionSearchController({
+      search: ({ requestId, prefix, signal }) => searchFileCompletions({
+        cwd: this.runtime.cwd,
+        homeDir: HOME_DIR,
+        prefix,
+        signal,
+        logger,
+      }),
+      emit: (packet) => sendJson(this.ws, packet),
+      isOpen: () => this.ws.readyState === WebSocket.OPEN,
+      logger,
+    });
     this.extUi = createExtUiBridge({
       send: (msg) => sendJson(this.ws, msg),
       log: logger,
@@ -771,6 +785,7 @@ class NativePiSessionController {
   }
 
   async applyTargetTransition(transition, options = {}) {
+    this.fileCompletion.abortActive("target_transition");
     logger.info("applying target transition", {
       kind: transition.kind,
       cwd: transition.cwd,
@@ -802,6 +817,7 @@ class NativePiSessionController {
   }
 
   detachSessionBinding() {
+    this.fileCompletion.abortActive("session_detached");
     this.stopFileWatch();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
@@ -1143,6 +1159,10 @@ class NativePiSessionController {
 
     if (this.startupBlock) {
       if (payload?.type === "ready") return;
+      if (payload?.type === "file_completion_request") {
+        this.sendEmptyFileCompletionResult(payload);
+        return;
+      }
       const handled = await this.handleRuntimeFreeRecovery(payload);
       if (handled) return;
       sendJson(this.ws, {
@@ -1167,6 +1187,10 @@ class NativePiSessionController {
         await this.handleReady(lastSeq);
         return;
       }
+      case "file_completion_request":
+        this.handleFileCompletionRequest(payload);
+        return;
+
       case "refresh":
         await this.runCommand("refresh", async () => {
           await this.sendBootstrap({ reset: true });
@@ -1352,6 +1376,26 @@ class NativePiSessionController {
     }
   }
 
+  sendEmptyFileCompletionResult(payload) {
+    const requestId = String(payload?.requestId || "");
+    const prefix = String(payload?.prefix || "");
+    sendJson(this.ws, {
+      type: "file_completion_result",
+      payload: { requestId, prefix, items: [] },
+    });
+  }
+
+  handleFileCompletionRequest(payload) {
+    const requestId = String(payload?.requestId || "");
+    const prefix = String(payload?.prefix || "");
+    if (!requestId || !prefix.startsWith("@")) {
+      this.sendEmptyFileCompletionResult({ requestId, prefix });
+      return;
+    }
+
+    this.fileCompletion.request({ requestId, prefix });
+  }
+
   async handleRuntimeFreeRecovery(payload) {
     switch (payload?.type) {
       case "list_all_sessions": {
@@ -1505,6 +1549,7 @@ class NativePiSessionController {
 
   async close() {
     try {
+      this.fileCompletion.close();
       this.stopFileWatch();
       this.unsubscribe?.();
       this.extUi?.dispose();

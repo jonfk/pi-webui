@@ -64,6 +64,14 @@ _Avoid_: runtime switcher, controller helper
 The boundary between pi-webui target intent and Pi SDK lifecycle methods such as session switch, new session, import, clone, and fork.
 _Avoid_: special case branch, lifecycle workaround
 
+**File Completion Module**:
+The server module that turns a user-visible `@` file prefix into insert-ready file and directory completion items.
+_Avoid_: fd helper, autocomplete utility
+
+**File Completion Search Controller**:
+The websocket-scoped server module that owns the active `@` file completion search and suppresses stale results.
+_Avoid_: request flag, cancellation helper
+
 ## Relationships
 
 - A **Slash Command Catalog** may include **Skill Commands** when pi skill commands are enabled.
@@ -79,6 +87,8 @@ _Avoid_: special case branch, lifecycle workaround
 - A **Runtime Target Host** commits a **Selected Runtime Target** only after the underlying runtime operation succeeds.
 - A **Target Transition Module** validates target intent but does not mutate runtime state or persistence.
 - A **Session Replacement Adapter** preserves Pi lifecycle events when the Pi SDK already has a session replacement method.
+- A **File Completion Module** preserves the user's visible path form while using `fd` to search the filesystem.
+- A **File Completion Search Controller** keeps one active **File Completion Module** request per websocket and aborts replaced or closed searches.
 
 ## Example Dialogue
 
