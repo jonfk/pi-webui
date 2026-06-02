@@ -73,4 +73,9 @@ export class FileCompletionSearchController<Request extends FileCompletionReques
     this.activeSearch.abortController.abort(reason);
     this.activeSearch = null;
   }
+
+  abortRequest(requestId: string, reason: string): void {
+    if (this.activeSearch?.requestId !== requestId) return;
+    this.abortActive(reason);
+  }
 }

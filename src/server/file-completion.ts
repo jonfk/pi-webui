@@ -1,16 +1,20 @@
 import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { parseAtFilePrefix } from "../../public/file-completion-grammar.mjs";
 
 const FD_EXECUTABLE = "fd";
 const DEFAULT_LIMIT = 20;
 const DEFAULT_TIMEOUT_MS = 750;
 
 export type FileCompletionItem = {
-  value: string;
+  insertText: string;
   label: string;
   description: string;
   isDirectory: boolean;
+  addsTrailingSpace: boolean;
+  cursorOffset: number;
+  replaceFollowingText?: string;
 };
 
 type Logger = {
@@ -66,16 +70,6 @@ function buildFdPathQuery(query: string): string {
   return pattern;
 }
 
-function parsePrefix(prefix: string): { rawPrefix: string; isQuotedPrefix: boolean } {
-  if (prefix.startsWith('@"')) {
-    return { rawPrefix: prefix.slice(2), isQuotedPrefix: true };
-  }
-  if (prefix.startsWith("@")) {
-    return { rawPrefix: prefix.slice(1), isQuotedPrefix: false };
-  }
-  throw new Error(`Expected an @ file completion prefix, got ${prefix}`);
-}
-
 function expandHomePath(homeDir: string, rawPath: string): string {
   if (rawPath === "~") {
     return homeDir;
@@ -95,7 +89,7 @@ export function buildFileCompletionSearchPlan({
   homeDir: string;
   prefix: string;
 }): SearchPlan {
-  const parsed = parsePrefix(prefix);
+  const parsed = parseAtFilePrefix(prefix);
   const rawPrefix = toDisplayPath(parsed.rawPrefix);
   const expandedPrefix = expandHomePath(homeDir, rawPrefix);
   const slashIndex = rawPrefix.lastIndexOf("/");
@@ -176,11 +170,28 @@ function scopedPathForDisplay(displayBase: string, relativePath: string): string
   return `${toDisplayPath(displayBase)}${normalizedRelativePath}`;
 }
 
-function buildCompletionValue(completionPath: string, isQuotedPrefix: boolean): string {
+function buildCompletionInsertion(
+  completionPath: string,
+  isDirectory: boolean,
+  isQuotedPrefix: boolean,
+): Pick<FileCompletionItem, "insertText" | "addsTrailingSpace" | "cursorOffset" | "replaceFollowingText"> {
+  const addsTrailingSpace = !isDirectory;
   if (!isQuotedPrefix && !completionPath.includes(" ")) {
-    return `@${completionPath}`;
+    const insertText = `@${completionPath}`;
+    return {
+      insertText,
+      addsTrailingSpace,
+      cursorOffset: insertText.length + (addsTrailingSpace ? 1 : 0),
+    };
   }
-  return `@"${completionPath}"`;
+
+  const insertText = `@"${completionPath}"`;
+  return {
+    insertText,
+    addsTrailingSpace,
+    cursorOffset: isDirectory ? insertText.length - 1 : insertText.length + (addsTrailingSpace ? 1 : 0),
+    replaceFollowingText: '"',
+  };
 }
 
 function scoreEntry(filePath: string, query: string, isDirectory: boolean): number {
@@ -398,11 +409,11 @@ export async function searchFileCompletions({
     .map((entry) => {
       const displayPath = scopedPathForDisplay(plan.displayBase, entry.path);
       const completionPath = entry.isDirectory ? `${displayPath}/` : displayPath;
-      const value = buildCompletionValue(completionPath, plan.isQuotedPrefix);
+      const insertion = buildCompletionInsertion(completionPath, entry.isDirectory, plan.isQuotedPrefix);
       const labelPath = entry.isDirectory ? displayPath : completionPath;
 
       return {
-        value,
+        ...insertion,
         label: `${basename(labelPath)}${entry.isDirectory ? "/" : ""}`,
         description: displayPath,
         isDirectory: entry.isDirectory,

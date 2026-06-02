@@ -35,11 +35,24 @@ type FileCompletionRequestPacket = {
   prefix: unknown;
 };
 
+type FileCompletionCancelPacket = {
+  type: "file_completion_cancel";
+  requestId: unknown;
+};
+
 function isFileCompletionRequestPacket(packet: unknown): packet is FileCompletionRequestPacket {
   return (
     typeof packet === "object"
     && packet !== null
     && (packet as { type?: unknown }).type === "file_completion_request"
+  );
+}
+
+function isFileCompletionCancelPacket(packet: unknown): packet is FileCompletionCancelPacket {
+  return (
+    typeof packet === "object"
+    && packet !== null
+    && (packet as { type?: unknown }).type === "file_completion_cancel"
   );
 }
 
@@ -51,6 +64,13 @@ function parseFileCompletionRequest(packet: FileCompletionRequestPacket): FileCo
     throw new Error("file_completion_request.prefix must be an @ file completion prefix");
   }
   return { requestId: packet.requestId, prefix: packet.prefix };
+}
+
+function parseFileCompletionCancel(packet: FileCompletionCancelPacket): Pick<FileCompletionRequest, "requestId"> {
+  if (typeof packet.requestId !== "string" || packet.requestId.length === 0) {
+    throw new Error("file_completion_cancel.requestId must be a non-empty string");
+  }
+  return { requestId: packet.requestId };
 }
 
 export class FileCompletionEndpoint {
@@ -72,19 +92,25 @@ export class FileCompletionEndpoint {
   }
 
   handle(packet: unknown): boolean {
-    if (!isFileCompletionRequestPacket(packet)) {
-      return false;
-    }
-
-    const request = parseFileCompletionRequest(packet);
-    const context = this.options.getSearchContext();
-    if (!context) {
-      this.sendEmptyResult(request);
+    if (isFileCompletionCancelPacket(packet)) {
+      const cancel = parseFileCompletionCancel(packet);
+      this.searches.abortRequest(cancel.requestId, "client_cancelled");
       return true;
     }
 
-    this.searches.request({ ...request, ...context });
-    return true;
+    if (isFileCompletionRequestPacket(packet)) {
+      const request = parseFileCompletionRequest(packet);
+      const context = this.options.getSearchContext();
+      if (!context) {
+        this.sendEmptyResult(request);
+        return true;
+      }
+
+      this.searches.request({ ...request, ...context });
+      return true;
+    }
+
+    return false;
   }
 
   abortRuntimeWork(): void {

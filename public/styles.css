@@ -313,7 +313,8 @@ body.drag-active .composer-wrapper {
 
 /* ── Slash command menu ─────────────────────────── */
 
-.slash-menu {
+.slash-menu,
+.file-completion-menu {
   margin: 0 0.75rem;
   border: 1px solid var(--border);
   background: var(--panel);
@@ -321,11 +322,13 @@ body.drag-active .composer-wrapper {
   overflow-y: auto;
 }
 
-.slash-menu[hidden] {
+.slash-menu[hidden],
+.file-completion-menu[hidden] {
   display: none;
 }
 
-.slash-item {
+.slash-item,
+.file-completion-item {
   display: grid;
   grid-template-columns: minmax(0, auto) minmax(0, 1fr);
   gap: 0.75rem;
@@ -334,20 +337,24 @@ body.drag-active .composer-wrapper {
   cursor: pointer;
 }
 
-.slash-item.active {
+.slash-item.active,
+.file-completion-item.active {
   background: var(--accent);
   color: var(--bg);
 }
 
-.slash-item.active .desc {
+.slash-item.active .desc,
+.file-completion-item.active .desc {
   color: var(--bg);
 }
 
-.slash-item:hover:not(.active) {
+.slash-item:hover:not(.active),
+.file-completion-item:hover:not(.active) {
   background: var(--panel-2);
 }
 
-.slash-item .name {
+.slash-item .name,
+.file-completion-item .name {
   color: inherit;
 }
 
@@ -362,8 +369,15 @@ body.drag-active .composer-wrapper {
   color: var(--muted);
 }
 
-.slash-item .desc {
+.slash-item .desc,
+.file-completion-item .desc {
   color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-completion-item .name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

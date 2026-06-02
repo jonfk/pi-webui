@@ -49,6 +49,28 @@ function createTempTree() {
   };
 }
 
+function fileCompletionItem(insertText, label, description) {
+  return {
+    insertText,
+    label,
+    description,
+    isDirectory: false,
+    addsTrailingSpace: true,
+    cursorOffset: `${insertText} `.length,
+  };
+}
+
+function directoryCompletionItem(insertText, label, description) {
+  return {
+    insertText,
+    label,
+    description,
+    isDirectory: true,
+    addsTrailingSpace: false,
+    cursorOffset: insertText.length,
+  };
+}
+
 function writeTree(baseDir, entries) {
   for (const [relativePath, value] of Object.entries(entries)) {
     const fullPath = join(baseDir, relativePath);
@@ -83,7 +105,7 @@ test("buildFileCompletionSearchPlan expands home only for search", () => {
   assert.equal(plan.query, "src");
 });
 
-test("searchFileCompletions preserves relative values for files and directories", async () => {
+test("searchFileCompletions returns explicit insertion contract for files and directories", async () => {
   const tree = createTempTree();
   try {
     writeTree(tree.cwd, {
@@ -96,10 +118,26 @@ test("searchFileCompletions preserves relative values for files and directories"
       homeDir: tree.home,
       prefix: "@",
     });
-    const values = items.map((item) => item.value);
+    const fileItem = items.find((item) => item.insertText === "@README.md");
+    const directoryItem = items.find((item) => item.insertText === "@src/");
+    const values = items.map((item) => item.insertText);
 
-    assert.ok(values.includes("@README.md"));
-    assert.ok(values.includes("@src/"));
+    assert.deepEqual(fileItem, {
+      insertText: "@README.md",
+      label: "README.md",
+      description: "README.md",
+      isDirectory: false,
+      addsTrailingSpace: true,
+      cursorOffset: "@README.md ".length,
+    });
+    assert.deepEqual(directoryItem, {
+      insertText: "@src/",
+      label: "src/",
+      description: "src",
+      isDirectory: true,
+      addsTrailingSpace: false,
+      cursorOffset: "@src/".length,
+    });
     assert.equal(values.find((value) => value === "@src//"), undefined);
   } finally {
     tree.cleanup();
@@ -120,7 +158,7 @@ test("searchFileCompletions scopes nested relative prefixes", async () => {
       homeDir: tree.home,
       prefix: "@src/i",
     });
-    const values = items.map((item) => item.value);
+    const values = items.map((item) => item.insertText);
 
     assert.ok(values.includes("@src/index.ts"));
     assert.ok(values.includes("@src/internal/"));
@@ -143,7 +181,7 @@ test("searchFileCompletions falls back to full-path fuzzy search for missing rel
       homeDir: tree.home,
       prefix: "@components/",
     });
-    const values = items.map((item) => item.value);
+    const values = items.map((item) => item.insertText);
 
     assert.ok(values.includes("@src/components/Button.tsx"));
     assert.ok(!values.includes("@src/utils/helpers.ts"));
@@ -165,7 +203,7 @@ test("searchFileCompletions matches deep slash queries from cwd when the scope d
       homeDir: tree.home,
       prefix: "@tui/src/auto",
     });
-    const values = items.map((item) => item.value);
+    const values = items.map((item) => item.insertText);
 
     assert.ok(values.includes("@packages/tui/src/autocomplete.ts"));
     assert.ok(!values.includes("@packages/ai/src/autocomplete.ts"));
@@ -200,10 +238,10 @@ test("searchFileCompletions treats regex metacharacters as literal filename text
       prefix: "@foo.",
     });
 
-    assert.ok(bracketItems.some((item) => item.value === "@[draft].md"));
-    assert.ok(parenItems.some((item) => item.value === "@(notes).md"));
-    assert.ok(dotItems.some((item) => item.value === "@foo.bar"));
-    assert.ok(!dotItems.some((item) => item.value === "@fooXbar"));
+    assert.ok(bracketItems.some((item) => item.insertText === "@[draft].md"));
+    assert.ok(parenItems.some((item) => item.insertText === "@(notes).md"));
+    assert.ok(dotItems.some((item) => item.insertText === "@foo.bar"));
+    assert.ok(!dotItems.some((item) => item.insertText === "@fooXbar"));
   } finally {
     tree.cleanup();
   }
@@ -223,7 +261,7 @@ test("searchFileCompletions treats leading dash queries as filename text", async
       prefix: "@-d",
     });
 
-    assert.ok(items.some((item) => item.value === "@-dash.txt"));
+    assert.ok(items.some((item) => item.insertText === "@-dash.txt"));
   } finally {
     tree.cleanup();
   }
@@ -255,10 +293,10 @@ test("searchFileCompletions treats regex metacharacters as literal scoped path t
       prefix: "@src/foo.",
     });
 
-    assert.ok(bracketItems.some((item) => item.value === "@src/[draft].md"));
-    assert.ok(parenItems.some((item) => item.value === "@src/(notes).md"));
-    assert.ok(dotItems.some((item) => item.value === "@src/foo.bar"));
-    assert.ok(!dotItems.some((item) => item.value === "@src/fooXbar"));
+    assert.ok(bracketItems.some((item) => item.insertText === "@src/[draft].md"));
+    assert.ok(parenItems.some((item) => item.insertText === "@src/(notes).md"));
+    assert.ok(dotItems.some((item) => item.insertText === "@src/foo.bar"));
+    assert.ok(!dotItems.some((item) => item.insertText === "@src/fooXbar"));
   } finally {
     tree.cleanup();
   }
@@ -279,7 +317,7 @@ test("searchFileCompletions preserves parent-relative prefixes", async () => {
       homeDir: tree.home,
       prefix: "@../sibling/a",
     });
-    const values = items.map((item) => item.value);
+    const values = items.map((item) => item.insertText);
 
     assert.ok(values.includes("@../sibling/nested/alpha.ts"));
     assert.ok(!values.includes("@../sibling/nested/zzz.ts"));
@@ -301,7 +339,7 @@ test("searchFileCompletions preserves absolute prefixes", async () => {
       prefix: `@${tree.cwd}/REA`,
     });
 
-    assert.ok(items.some((item) => item.value === `@${tree.cwd}/README.md`));
+    assert.ok(items.some((item) => item.insertText === `@${tree.cwd}/README.md`));
   } finally {
     tree.cleanup();
   }
@@ -320,7 +358,7 @@ test("searchFileCompletions searches home-relative prefixes but returns user-vis
       prefix: "@~/project/a",
     });
 
-    assert.ok(items.some((item) => item.value === "@~/project/alpha.ts"));
+    assert.ok(items.some((item) => item.insertText === "@~/project/alpha.ts"));
   } finally {
     tree.cleanup();
   }
@@ -331,15 +369,44 @@ test("searchFileCompletions quotes paths with spaces", async () => {
   try {
     writeTree(tree.cwd, {
       "my folder/space file.txt": "content",
+      "my folder/templates/index.ts": "export {};",
     });
 
-    const items = await searchFileCompletions({
+    const fileItems = await searchFileCompletions({
       cwd: tree.cwd,
       homeDir: tree.home,
       prefix: '@"my folder/s',
     });
+    const directoryItems = await searchFileCompletions({
+      cwd: tree.cwd,
+      homeDir: tree.home,
+      prefix: '@"my folder/t',
+    });
 
-    assert.ok(items.some((item) => item.value === '@"my folder/space file.txt"'));
+    assert.deepEqual(
+      fileItems.find((item) => item.insertText === '@"my folder/space file.txt"'),
+      {
+        insertText: '@"my folder/space file.txt"',
+        label: "space file.txt",
+        description: "my folder/space file.txt",
+        isDirectory: false,
+        addsTrailingSpace: true,
+        cursorOffset: '@"my folder/space file.txt" '.length,
+        replaceFollowingText: '"',
+      },
+    );
+    assert.deepEqual(
+      directoryItems.find((item) => item.insertText === '@"my folder/templates/"'),
+      {
+        insertText: '@"my folder/templates/"',
+        label: "templates/",
+        description: "my folder/templates",
+        isDirectory: true,
+        addsTrailingSpace: false,
+        cursorOffset: '@"my folder/templates/'.length,
+        replaceFollowingText: '"',
+      },
+    );
   } finally {
     tree.cleanup();
   }
@@ -359,7 +426,7 @@ test("searchFileCompletions includes hidden paths and excludes .git", async () =
       homeDir: tree.home,
       prefix: "@",
     });
-    const values = items.map((item) => item.value);
+    const values = items.map((item) => item.insertText);
 
     assert.ok(values.includes("@.pi/"));
     assert.ok(values.includes("@.github/"));
@@ -384,7 +451,7 @@ test("searchFileCompletions follows symlinked directories", async () => {
       homeDir: tree.home,
       prefix: "@some",
     });
-    const values = items.map((item) => item.value);
+    const values = items.map((item) => item.insertText);
 
     assert.ok(values.includes("@symlinked_dir/some_file.txt"));
   } finally {
@@ -412,7 +479,7 @@ test("searchFileCompletions trusts fd trailing slashes for directory results", a
         homeDir: tree.home,
         prefix: "@",
       });
-      const values = items.map((item) => item.value);
+      const values = items.map((item) => item.insertText);
 
       assert.ok(values.includes("@src/"));
       assert.ok(values.includes("@README.md"));
@@ -487,8 +554,8 @@ test("FileCompletionSearchController emits only the latest active request", asyn
 
   controller.request({ requestId: "req-1", prefix: "@a" });
   controller.request({ requestId: "req-2", prefix: "@b" });
-  pending.get("req-1")?.resolve([{ value: "@a.txt", label: "a.txt", description: "a.txt", isDirectory: false }]);
-  pending.get("req-2")?.resolve([{ value: "@b.txt", label: "b.txt", description: "b.txt", isDirectory: false }]);
+  pending.get("req-1")?.resolve([fileCompletionItem("@a.txt", "a.txt", "a.txt")]);
+  pending.get("req-2")?.resolve([fileCompletionItem("@b.txt", "b.txt", "b.txt")]);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(emitted.map((packet) => packet.payload.requestId), ["req-2"]);
@@ -509,7 +576,7 @@ test("FileCompletionSearchController suppresses results after close", async () =
 
   controller.request({ requestId: "req-1", prefix: "@" });
   controller.close();
-  resolveSearch([{ value: "@a.txt", label: "a.txt", description: "a.txt", isDirectory: false }]);
+  resolveSearch([fileCompletionItem("@a.txt", "a.txt", "a.txt")]);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(emitted, []);
@@ -525,7 +592,7 @@ test("FileCompletionEndpoint searches with the current runtime context", async (
     logger: createLogger().logger,
     search: async (request) => {
       seenRequests.push(request);
-      return [{ value: "@src/", label: "src/", description: "@src", isDirectory: true }];
+      return [directoryCompletionItem("@src/", "src/", "@src")];
     },
   });
 
@@ -541,7 +608,7 @@ test("FileCompletionEndpoint searches with the current runtime context", async (
     payload: {
       requestId: "req-1",
       prefix: "@s",
-      items: [{ value: "@src/", label: "src/", description: "@src", isDirectory: true }],
+      items: [directoryCompletionItem("@src/", "src/", "@src")],
     },
   }]);
 });
@@ -583,6 +650,10 @@ test("FileCompletionEndpoint fails loudly on malformed request packets", () => {
     () => endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "s" }),
     /prefix must be an @ file completion prefix/,
   );
+  assert.throws(
+    () => endpoint.handle({ type: "file_completion_cancel", requestId: "" }),
+    /requestId must be a non-empty string/,
+  );
 });
 
 test("FileCompletionEndpoint suppresses replaced request results", async () => {
@@ -605,12 +676,61 @@ test("FileCompletionEndpoint suppresses replaced request results", async () => {
 
   endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@a" });
   endpoint.handle({ type: "file_completion_request", requestId: "req-2", prefix: "@b" });
-  pending.get("req-1")?.resolve([{ value: "@a.txt", label: "a.txt", description: "a.txt", isDirectory: false }]);
-  pending.get("req-2")?.resolve([{ value: "@b.txt", label: "b.txt", description: "b.txt", isDirectory: false }]);
+  pending.get("req-1")?.resolve([fileCompletionItem("@a.txt", "a.txt", "a.txt")]);
+  pending.get("req-2")?.resolve([fileCompletionItem("@b.txt", "b.txt", "b.txt")]);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(aborted, ["req-1"]);
   assert.deepEqual(emitted.map((packet) => packet.payload.requestId), ["req-2"]);
+});
+
+test("FileCompletionEndpoint aborts a client-cancelled active request", async () => {
+  const emitted = [];
+  const aborted = [];
+  let resolveSearch;
+  const endpoint = createFileCompletionEndpoint({
+    getSearchContext: () => ({ cwd: "/workspace", homeDir: "/home/user" }),
+    send: (packet) => emitted.push(packet),
+    isOpen: () => true,
+    logger: createLogger().logger,
+    search: ({ requestId, signal }) => new Promise((resolve, reject) => {
+      resolveSearch = resolve;
+      signal.addEventListener("abort", () => {
+        aborted.push(requestId);
+        reject(new Error("aborted"));
+      }, { once: true });
+    }),
+  });
+
+  endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@a" });
+  assert.equal(endpoint.handle({ type: "file_completion_cancel", requestId: "req-1" }), true);
+  resolveSearch([fileCompletionItem("@a.txt", "a.txt", "a.txt")]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(aborted, ["req-1"]);
+  assert.deepEqual(emitted, []);
+});
+
+test("FileCompletionEndpoint ignores cancels for inactive request ids", async () => {
+  const emitted = [];
+  let resolveSearch;
+  const endpoint = createFileCompletionEndpoint({
+    getSearchContext: () => ({ cwd: "/workspace", homeDir: "/home/user" }),
+    send: (packet) => emitted.push(packet),
+    isOpen: () => true,
+    logger: createLogger().logger,
+    search: ({ signal }) => new Promise((resolve, reject) => {
+      resolveSearch = resolve;
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }),
+  });
+
+  endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@a" });
+  assert.equal(endpoint.handle({ type: "file_completion_cancel", requestId: "other" }), true);
+  resolveSearch([fileCompletionItem("@a.txt", "a.txt", "a.txt")]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(emitted.map((packet) => packet.payload.requestId), ["req-1"]);
 });
 
 test("FileCompletionEndpoint aborts runtime work without emitting stale results", async () => {
@@ -629,7 +749,7 @@ test("FileCompletionEndpoint aborts runtime work without emitting stale results"
 
   endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@a" });
   endpoint.abortRuntimeWork();
-  resolveSearch([{ value: "@a.txt", label: "a.txt", description: "a.txt", isDirectory: false }]);
+  resolveSearch([fileCompletionItem("@a.txt", "a.txt", "a.txt")]);
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(emitted, []);

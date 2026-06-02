@@ -76,6 +76,10 @@ _Avoid_: request flag, cancellation helper
 The websocket-facing server module that owns `@` file completion packet parsing, empty-result policy, and runtime lifecycle aborts.
 _Avoid_: websocket helper, request router
 
+**File Completion UI Module**:
+The browser module that detects `@` file completion context, requests file matches, renders the dedicated menu, and applies insert-ready values to the composer.
+_Avoid_: frontend autocomplete helper, slash menu extension
+
 ## Relationships
 
 - A **Slash Command Catalog** may include **Skill Commands** when pi skill commands are enabled.
@@ -94,6 +98,7 @@ _Avoid_: websocket helper, request router
 - A **File Completion Module** preserves the user's visible path form while using `fd` to search the filesystem.
 - A **File Completion Search Controller** keeps one active **File Completion Module** request per websocket and aborts replaced or closed searches.
 - A **File Completion Endpoint** delegates filesystem search state to the **File Completion Search Controller** and keeps websocket packet policy out of the session controller.
+- A **File Completion UI Module** delegates filesystem semantics to the **File Completion Endpoint** and keeps `@` file menu state separate from the **Slash Command Catalog**.
 
 ## Example Dialogue
 

@@ -4,6 +4,7 @@ const sendButton = document.getElementById("send");
 const log = document.getElementById("log");
 const toastLayer = document.getElementById("toast-layer");
 const slashMenu = document.getElementById("slash-menu");
+const fileCompletionMenu = document.getElementById("file-completion-menu");
 const modal = document.getElementById("modal");
 const modalSearch = document.getElementById("modal-search");
 const modalBody = document.getElementById("modal-body");
@@ -39,6 +40,7 @@ import { createFollowState, onScrollEvent, shouldAutoScroll } from "./scroll-fol
 import { log as logger } from "./log.mjs";
 import { createCustomOverlayHost } from "./ext-custom.mjs";
 import { routeInput } from "./route-input.mjs";
+import { createFileCompletionController } from "./file-completion-controller.mjs";
 import { createBrowserUrlState } from "./url-state.mjs";
 import {
   cwdRequiredToChatItem,
@@ -132,6 +134,13 @@ function resizeInput() {
   input.style.height = "36px";
   input.style.height = `${Math.min(input.scrollHeight, 240)}px`;
 }
+
+const fileCompletionController = createFileCompletionController({
+  input,
+  menu: fileCompletionMenu,
+  sendRequest: sendTransient,
+  onApply: resizeInput,
+});
 
 // rows to jump per Page Up / Page Down inside a modal picker.
 const MODAL_PAGE_SIZE = 10;
@@ -379,6 +388,12 @@ function syncRunningButton() {
 function send(payload) {
   if (socket?.readyState === WebSocket.OPEN) {
     urlState.observeCommandStarted(commandNameForOutgoingPayload(payload));
+    socket.send(JSON.stringify(payload));
+  }
+}
+
+function sendTransient(payload) {
+  if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(payload));
   }
 }
@@ -781,6 +796,9 @@ function connect() {
       case "list_dir_result":
         handleListDirResult(packet.payload);
         return;
+      case "file_completion_result":
+        fileCompletionController.handleResult(packet.payload);
+        return;
       case "command_result":
         if (!packet.payload.ok) {
           const msg = packet.payload.error || `${packet.payload.command} failed`;
@@ -842,6 +860,7 @@ function connect() {
 
   socket.addEventListener("close", (event) => {
     logger.warn("ws close", { code: event.code, reason: event.reason || undefined });
+    fileCompletionController.close("socket_close");
     csSetError(chatState, "disconnected from server");
     dispatchSessionEvent(chatState, { type: "agent_end" });
     renderLog();
@@ -853,6 +872,7 @@ function connect() {
 
   socket.addEventListener("error", () => {
     logger.error("ws error");
+    fileCompletionController.close("socket_error");
     csSetError(chatState, "websocket error");
     dispatchSessionEvent(chatState, { type: "agent_end" });
     renderLog();
@@ -1753,6 +1773,7 @@ function hideSlashMenuForHistory() {
   slashFiltered = [];
   slashIndex = 0;
   slashMenu.hidden = true;
+  fileCompletionController.close("history");
 }
 
 function applySlashSelection() {
@@ -1761,6 +1782,7 @@ function applySlashSelection() {
   input.value = `/${cmd.name} `;
   slashFiltered = [];
   slashMenu.hidden = true;
+  fileCompletionController.close("slash_applied");
   input.focus();
 }
 
@@ -1773,6 +1795,9 @@ input.addEventListener("keydown", (event) => {
   if (event.key === "Backspace" && input.value === "" && bashMode) {
     event.preventDefault();
     setBashMode(false);
+    return;
+  }
+  if (fileCompletionController.handleKeydown(event)) {
     return;
   }
   if (!slashMenu.hidden && slashFiltered.length > 0) {
@@ -1853,6 +1878,17 @@ input.addEventListener("input", () => {
   resizeInput();
   inputHistoryIndex = inputHistory.length;
   updateSlashMenu();
+  fileCompletionController.onInputChanged();
+});
+
+input.addEventListener("click", () => {
+  fileCompletionController.onCursorChanged();
+});
+
+input.addEventListener("keyup", (event) => {
+  if (["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+    fileCompletionController.onCursorChanged();
+  }
 });
 
 const TEXT_MODAL_SCROLL_KEYS = new Set([
@@ -1860,6 +1896,8 @@ const TEXT_MODAL_SCROLL_KEYS = new Set([
 ]);
 
 document.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented) return;
+
   if (!modal.hidden && modalDialog.classList.contains("text-mode")) {
     if (event.key === "Escape" || event.key === "Enter") {
       event.preventDefault();
@@ -1912,6 +1950,7 @@ document.addEventListener("mouseup", () => {
 
 input.addEventListener("blur", () => {
   slashMenu.hidden = true;
+  fileCompletionController.close("blur");
 });
 
 log.addEventListener("click", async (event) => {
@@ -2114,6 +2153,7 @@ composer.addEventListener("submit", (event) => {
   input.value = "";
   input.style.height = "36px";
   slashMenu.hidden = true;
+  fileCompletionController.close("submit");
 
   // bash/slash routing applies only when there are no pasted attachments —
   // images can only be carried by a regular prompt message.
