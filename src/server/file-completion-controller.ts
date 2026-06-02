@@ -5,24 +5,24 @@ export type FileCompletionRequest = {
   prefix: string;
 };
 
-type ActiveSearch = {
+type ActiveSearch<Request extends FileCompletionRequest> = Request & {
   requestId: string;
   prefix: string;
   abortController: AbortController;
 };
 
-export class FileCompletionSearchController {
-  private activeSearch: ActiveSearch | null = null;
+export class FileCompletionSearchController<Request extends FileCompletionRequest = FileCompletionRequest> {
+  private activeSearch: ActiveSearch<Request> | null = null;
   private closed = false;
 
   constructor(private readonly options: {
-    search: (request: FileCompletionRequest & { signal: AbortSignal }) => Promise<FileCompletionItem[]>;
+    search: (request: Request & { signal: AbortSignal }) => Promise<FileCompletionItem[]>;
     emit: (packet: { type: "file_completion_result"; payload: FileCompletionRequest & { items: FileCompletionItem[] } }) => void;
     isOpen: () => boolean;
     logger: { error: (message: string, fields?: Record<string, unknown>) => void };
   }) {}
 
-  request(request: FileCompletionRequest): void {
+  request(request: Request): void {
     if (this.closed) {
       return;
     }
@@ -41,7 +41,7 @@ export class FileCompletionSearchController {
         this.activeSearch = null;
         this.options.emit({
           type: "file_completion_result",
-          payload: { ...request, items },
+          payload: { requestId: request.requestId, prefix: request.prefix, items },
         });
       })
       .catch((error) => {
@@ -57,7 +57,7 @@ export class FileCompletionSearchController {
         }
         this.options.emit({
           type: "file_completion_result",
-          payload: { ...request, items: [] },
+          payload: { requestId: request.requestId, prefix: request.prefix, items: [] },
         });
       });
   }

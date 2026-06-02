@@ -72,6 +72,10 @@ _Avoid_: fd helper, autocomplete utility
 The websocket-scoped server module that owns the active `@` file completion search and suppresses stale results.
 _Avoid_: request flag, cancellation helper
 
+**File Completion Endpoint**:
+The websocket-facing server module that owns `@` file completion packet parsing, empty-result policy, and runtime lifecycle aborts.
+_Avoid_: websocket helper, request router
+
 ## Relationships
 
 - A **Slash Command Catalog** may include **Skill Commands** when pi skill commands are enabled.
@@ -89,6 +93,7 @@ _Avoid_: request flag, cancellation helper
 - A **Session Replacement Adapter** preserves Pi lifecycle events when the Pi SDK already has a session replacement method.
 - A **File Completion Module** preserves the user's visible path form while using `fd` to search the filesystem.
 - A **File Completion Search Controller** keeps one active **File Completion Module** request per websocket and aborts replaced or closed searches.
+- A **File Completion Endpoint** delegates filesystem search state to the **File Completion Search Controller** and keeps websocket packet policy out of the session controller.
 
 ## Example Dialogue
 

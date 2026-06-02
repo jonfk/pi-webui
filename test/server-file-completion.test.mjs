@@ -12,6 +12,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FileCompletionSearchController } from "../dist/server/file-completion-controller.js";
+import { createFileCompletionEndpoint } from "../dist/server/file-completion-endpoint.js";
 import {
   buildFileCompletionSearchPlan,
   searchFileCompletions,
@@ -508,6 +509,126 @@ test("FileCompletionSearchController suppresses results after close", async () =
 
   controller.request({ requestId: "req-1", prefix: "@" });
   controller.close();
+  resolveSearch([{ value: "@a.txt", label: "a.txt", description: "a.txt", isDirectory: false }]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(emitted, []);
+});
+
+test("FileCompletionEndpoint searches with the current runtime context", async () => {
+  const emitted = [];
+  const seenRequests = [];
+  const endpoint = createFileCompletionEndpoint({
+    getSearchContext: () => ({ cwd: "/workspace", homeDir: "/home/user" }),
+    send: (packet) => emitted.push(packet),
+    isOpen: () => true,
+    logger: createLogger().logger,
+    search: async (request) => {
+      seenRequests.push(request);
+      return [{ value: "@src/", label: "src/", description: "@src", isDirectory: true }];
+    },
+  });
+
+  assert.equal(endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@s" }), true);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(seenRequests.length, 1);
+  assert.equal(seenRequests[0].cwd, "/workspace");
+  assert.equal(seenRequests[0].homeDir, "/home/user");
+  assert.equal(seenRequests[0].prefix, "@s");
+  assert.deepEqual(emitted, [{
+    type: "file_completion_result",
+    payload: {
+      requestId: "req-1",
+      prefix: "@s",
+      items: [{ value: "@src/", label: "src/", description: "@src", isDirectory: true }],
+    },
+  }]);
+});
+
+test("FileCompletionEndpoint emits an empty result when no runtime context exists", () => {
+  const emitted = [];
+  const endpoint = createFileCompletionEndpoint({
+    getSearchContext: () => null,
+    send: (packet) => emitted.push(packet),
+    isOpen: () => true,
+    logger: createLogger().logger,
+    search: async () => {
+      throw new Error("search should not run without a runtime context");
+    },
+  });
+
+  assert.equal(endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@s" }), true);
+
+  assert.deepEqual(emitted, [{
+    type: "file_completion_result",
+    payload: { requestId: "req-1", prefix: "@s", items: [] },
+  }]);
+});
+
+test("FileCompletionEndpoint fails loudly on malformed request packets", () => {
+  const endpoint = createFileCompletionEndpoint({
+    getSearchContext: () => ({ cwd: "/workspace", homeDir: "/home/user" }),
+    send: () => {},
+    isOpen: () => true,
+    logger: createLogger().logger,
+    search: async () => [],
+  });
+
+  assert.throws(
+    () => endpoint.handle({ type: "file_completion_request", requestId: "", prefix: "@s" }),
+    /requestId must be a non-empty string/,
+  );
+  assert.throws(
+    () => endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "s" }),
+    /prefix must be an @ file completion prefix/,
+  );
+});
+
+test("FileCompletionEndpoint suppresses replaced request results", async () => {
+  const emitted = [];
+  const pending = new Map();
+  const aborted = [];
+  const endpoint = createFileCompletionEndpoint({
+    getSearchContext: () => ({ cwd: "/workspace", homeDir: "/home/user" }),
+    send: (packet) => emitted.push(packet),
+    isOpen: () => true,
+    logger: createLogger().logger,
+    search: ({ requestId, prefix, signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        aborted.push(requestId);
+        reject(new Error("aborted"));
+      }, { once: true });
+      pending.set(requestId, { prefix, resolve });
+    }),
+  });
+
+  endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@a" });
+  endpoint.handle({ type: "file_completion_request", requestId: "req-2", prefix: "@b" });
+  pending.get("req-1")?.resolve([{ value: "@a.txt", label: "a.txt", description: "a.txt", isDirectory: false }]);
+  pending.get("req-2")?.resolve([{ value: "@b.txt", label: "b.txt", description: "b.txt", isDirectory: false }]);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(aborted, ["req-1"]);
+  assert.deepEqual(emitted.map((packet) => packet.payload.requestId), ["req-2"]);
+});
+
+test("FileCompletionEndpoint aborts runtime work without emitting stale results", async () => {
+  const emitted = [];
+  let resolveSearch;
+  const endpoint = createFileCompletionEndpoint({
+    getSearchContext: () => ({ cwd: "/workspace", homeDir: "/home/user" }),
+    send: (packet) => emitted.push(packet),
+    isOpen: () => true,
+    logger: createLogger().logger,
+    search: ({ signal }) => new Promise((resolve, reject) => {
+      resolveSearch = resolve;
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }),
+  });
+
+  endpoint.handle({ type: "file_completion_request", requestId: "req-1", prefix: "@a" });
+  endpoint.abortRuntimeWork();
   resolveSearch([{ value: "@a.txt", label: "a.txt", description: "a.txt", isDirectory: false }]);
   await new Promise((resolve) => setImmediate(resolve));
 
