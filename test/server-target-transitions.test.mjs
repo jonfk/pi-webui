@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   TargetTransitionApplicator,
   resolveCwdTransition,
+  resolveNewSessionTransition,
+  resolveOpenCwdTransition,
   resolveSessionTransition,
   resolveWorkspaceTransition,
   shouldPersistLastCwd,
@@ -119,6 +121,60 @@ test("cwd and workspace transitions resolve validated cwd targets", () => {
   }), /path must be inside/);
 });
 
+test("new session transition with omitted cwd uses the selected runtime target cwd", () => {
+  const fixture = makeFixture();
+
+  assert.deepEqual(resolveNewSessionTransition({
+    selectedTarget: {
+      kind: "session",
+      sessionPath: join(fixture.root, "current.jsonl"),
+      cwd: fixture.cwd,
+      source: "recovery",
+    },
+    policy: fixture.policy,
+  }), {
+    kind: "cwd",
+    source: "new_session",
+    cwd: fixture.cwd,
+  });
+});
+
+test("open cwd transition validates and uses explicit cwd", () => {
+  const fixture = makeFixture();
+
+  assert.deepEqual(resolveOpenCwdTransition({
+    cwd: fixture.otherCwd,
+    policy: fixture.policy,
+  }), {
+    kind: "cwd",
+    source: "open_cwd",
+    cwd: fixture.otherCwd,
+  });
+});
+
+test("open cwd transition rejects malformed or invalid explicit cwd", () => {
+  const fixture = makeFixture();
+
+  assert.throws(() => resolveOpenCwdTransition({
+    cwd: null,
+    policy: fixture.policy,
+  }), /cwd must be a string/);
+
+  assert.throws(() => resolveOpenCwdTransition({
+    cwd: fixture.outside,
+    policy: fixture.policy,
+  }), /path must be inside/);
+});
+
+test("new session transition without cwd still requires a selected runtime target", () => {
+  const fixture = makeFixture();
+
+  assert.throws(() => resolveNewSessionTransition({
+    selectedTarget: null,
+    policy: fixture.policy,
+  }), /No selected runtime target/);
+});
+
 test("session transition resolves header cwd and rejects bad sessions before runtime switch", () => {
   const fixture = makeFixture();
   const sessionPath = join(fixture.root, "session.jsonl");
@@ -163,7 +219,7 @@ test("transitionToRuntimeTarget preserves transition cwd as runtime authority", 
   const fixture = makeFixture();
   assert.deepEqual(transitionToRuntimeTarget({
     kind: "cwd",
-    source: "new_session",
+    source: "open_cwd",
     cwd: fixture.cwd,
   }), {
     kind: "cwd",

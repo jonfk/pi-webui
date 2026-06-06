@@ -122,6 +122,9 @@ export class RuntimeTargetHost<Runtime extends RuntimeLike = AgentSessionRuntime
     }
 
     if (runtime && transition.kind === "cwd" && transition.source === "new_session") {
+      if (runtime.cwd !== transition.cwd) {
+        throw new Error(`new_session target cwd must match current runtime cwd: expected ${runtime.cwd}, got ${transition.cwd}`);
+      }
       const result = await runtime.newSession();
       if (result?.cancelled) return { cancelled: true };
       await this.#commitExistingRuntimeTransition({ runtime, target, transition });

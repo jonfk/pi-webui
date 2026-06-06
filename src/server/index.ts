@@ -63,6 +63,8 @@ import {
 } from "./runtime-free-recovery.js";
 import {
   resolveCwdTransition,
+  resolveNewSessionTransition,
+  resolveOpenCwdTransition,
   resolveSessionTransition,
   resolveWorkspaceTransition,
   shouldPersistLastCwd,
@@ -151,17 +153,20 @@ function parseArgs(argv) {
   return out;
 }
 
-let args;
-try {
-  args = parseArgs(process.argv.slice(2));
-} catch (error) {
-  process.stderr.write(`${error.message}\n\n`);
-  printHelp();
-  process.exit(2);
-}
-if (args.help) {
-  printHelp();
-  process.exit(0);
+const isMain = process.argv[1] ? pathToFileURL(process.argv[1]).href === import.meta.url : false;
+let args = {};
+if (isMain) {
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\n\n`);
+    printHelp();
+    process.exit(2);
+  }
+  if (args.help) {
+    printHelp();
+    process.exit(0);
+  }
 }
 const listenFromArg = args.listen ? parseListen(args.listen) : null;
 const host = listenFromArg?.host ?? process.env.PI_WEBUI_HOST ?? DEFAULT_HOST;
@@ -683,12 +688,12 @@ function shouldRefreshMessages(eventType) {
   ]).has(eventType);
 }
 
-class NativePiSessionController {
-  constructor(ws, urlState) {
+export class NativePiSessionController {
+  constructor(ws, urlState, options = {}) {
     this.ws = ws;
     this.urlState = urlState;
     this.startupBlock = null;
-    this.runtimeHost = new RuntimeTargetHost({
+    this.runtimeHost = options.runtimeHost ?? new RuntimeTargetHost({
       createRuntimeForTarget: (target) => createAgentSessionRuntime(createRuntime, {
         cwd: target.cwd,
         agentDir,
@@ -784,12 +789,20 @@ class NativePiSessionController {
     });
   }
 
-  resolveNewSessionTransition() {
-    if (!this.selectedTarget) throw new Error("No selected runtime target");
-    return resolveCwdTransition({
-      cwd: this.selectedTarget.cwd,
+  resolveNewSessionTransition(payload = {}) {
+    if (Object.hasOwn(payload, "cwd")) {
+      throw new Error("new_session does not accept cwd; use open_cwd");
+    }
+    return resolveNewSessionTransition({
+      selectedTarget: this.selectedTarget,
       policy: cwdPolicy,
-      source: "new_session",
+    });
+  }
+
+  resolveOpenCwdTransition(payload = {}) {
+    return resolveOpenCwdTransition({
+      cwd: payload.cwd,
+      policy: cwdPolicy,
     });
   }
 
@@ -1248,7 +1261,18 @@ class NativePiSessionController {
       case "new_session":
         logger.info("new session requested");
         await this.runCommand("new_session", async () => {
-          const transition = this.resolveNewSessionTransition();
+          const transition = this.resolveNewSessionTransition(payload);
+          const result = await this.applyTargetTransition(transition);
+          if (result.cancelled) return { cancelled: true };
+          const data = { cwd: transition.cwd };
+          return withCommandEffects(data, [runtimeTargetChangedEffect(result.target)]);
+        });
+        return;
+
+      case "open_cwd":
+        logger.info("open cwd requested");
+        await this.runCommand("open_cwd", async () => {
+          const transition = this.resolveOpenCwdTransition(payload);
           const result = await this.applyTargetTransition(transition);
           if (result.cancelled) return { cancelled: true };
           const data = { cwd: transition.cwd };
@@ -1442,6 +1466,19 @@ class NativePiSessionController {
         return true;
       }
 
+      case "new_session": {
+        const error = Object.hasOwn(payload, "cwd")
+          ? "new_session does not accept cwd; use open_cwd"
+          : "Pi runtime is not initialized";
+        sendJson(this.ws, { type: "command_result", payload: { command: "new_session", ok: false, error } });
+        return true;
+      }
+
+      case "open_cwd": {
+        await this.runRuntimeFreeTransition("open_cwd", () => this.resolveOpenCwdTransition(payload));
+        return true;
+      }
+
       case "slash_command": {
         const name = String(payload.name || "").trim();
         if (name !== "cwd" && name !== "workspace") return false;
@@ -1544,40 +1581,46 @@ class NativePiSessionController {
   }
 }
 
-const server = createServer((req, res) => {
-  serveStatic(req, res);
-});
+export function startServer() {
+  const server = createServer((req, res) => {
+    serveStatic(req, res);
+  });
 
-const wss = new WebSocketServer({ server, path: "/ws" });
+  const wss = new WebSocketServer({ server, path: "/ws" });
 
-wss.on("connection", (ws, req) => {
-  const remote = req?.socket?.remoteAddress || "unknown";
-  logger.info("ws connect", { remote });
-  const url = new URL(req.url || "/ws", `http://${req.headers.host || "localhost"}`);
-  const urlState = parseServerUrlState(url.searchParams, cwdPolicy);
-  const controller = new NativePiSessionController(ws, urlState);
+  wss.on("connection", (ws, req) => {
+    const remote = req?.socket?.remoteAddress || "unknown";
+    logger.info("ws connect", { remote });
+    const url = new URL(req.url || "/ws", `http://${req.headers.host || "localhost"}`);
+    const urlState = parseServerUrlState(url.searchParams, cwdPolicy);
+    const controller = new NativePiSessionController(ws, urlState);
 
-  ws.on("message", (raw) => {
-    try {
-      const data = JSON.parse(raw.toString());
-      void controller.handle(data).catch((error) => {
+    ws.on("message", (raw) => {
+      try {
+        const data = JSON.parse(raw.toString());
+        void controller.handle(data).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.error("ws handler error", { error: message });
+          sendJson(ws, { type: "server_error", payload: message });
+        });
+      } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        logger.error("ws handler error", { error: message });
+        logger.error("ws parse error", { error: message });
         sendJson(ws, { type: "server_error", payload: message });
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error("ws parse error", { error: message });
-      sendJson(ws, { type: "server_error", payload: message });
-    }
+      }
+    });
+
+    ws.on("close", () => {
+      logger.info("ws disconnect", { remote });
+      void controller.close();
+    });
   });
 
-  ws.on("close", () => {
-    logger.info("ws disconnect", { remote });
-    void controller.close();
+  server.listen(port, host, () => {
+    logger.info("listening", { url: `http://${host}:${port}`, agentDir, sessionDir: sessionDir || undefined });
   });
-});
 
-server.listen(port, host, () => {
-  logger.info("listening", { url: `http://${host}:${port}`, agentDir, sessionDir: sessionDir || undefined });
-});
+  return { server, wss };
+}
+
+if (isMain) startServer();

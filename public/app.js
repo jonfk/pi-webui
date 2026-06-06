@@ -91,6 +91,7 @@ const COMMAND_RESULT_PACKET_TYPES = new Set([
   "prompt",
   "abort",
   "new_session",
+  "open_cwd",
   "switch_session",
   "cycle_model",
   "set_session_name",

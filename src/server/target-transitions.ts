@@ -8,6 +8,7 @@ import { validateSessionPointer } from "./url-session-startup.js";
 export type CwdTransitionSource =
   | "url_cwd_startup"
   | "picker"
+  | "open_cwd"
   | "slash_cwd"
   | "workspace"
   | "new_session";
@@ -43,13 +44,39 @@ export function transitionToRuntimeTarget(transition: TargetTransition): Extract
 export function resolveCwdTransition(args: {
   cwd: string;
   policy: CwdPolicy;
-  source: Extract<CwdTransitionSource, "picker" | "slash_cwd" | "new_session">;
+  source: Extract<CwdTransitionSource, "picker" | "open_cwd" | "slash_cwd" | "new_session">;
 }): TargetTransition {
   return {
     kind: "cwd",
     cwd: validateCwdTarget(args.cwd, args.policy),
     source: args.source,
   };
+}
+
+export function resolveNewSessionTransition(args: {
+  selectedTarget: Extract<RuntimeTarget, { kind: "cwd" | "session" }> | null;
+  policy: CwdPolicy;
+}): TargetTransition {
+  if (!args.selectedTarget) throw new Error("No selected runtime target");
+  return resolveCwdTransition({
+    cwd: args.selectedTarget.cwd,
+    policy: args.policy,
+    source: "new_session",
+  });
+}
+
+export function resolveOpenCwdTransition(args: {
+  cwd: unknown;
+  policy: CwdPolicy;
+}): TargetTransition {
+  if (typeof args.cwd !== "string") {
+    throw new Error("cwd must be a string");
+  }
+  return resolveCwdTransition({
+    cwd: args.cwd,
+    policy: args.policy,
+    source: "open_cwd",
+  });
 }
 
 export function resolveWorkspaceTransition(args: {

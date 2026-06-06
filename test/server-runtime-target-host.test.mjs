@@ -143,6 +143,57 @@ test("new session target transitions use runtime newSession", async () => {
   assert.equal(harness.detached, 1);
 });
 
+test("new session target transitions reject a different cwd", async () => {
+  const cwd = "/tmp/project";
+  const nextCwd = "/tmp/other";
+  const harness = createHarness();
+
+  await harness.host.start({ kind: "session", sessionPath: "/tmp/current.jsonl", cwd, source: "recovery" });
+  const firstRuntime = harness.created[0].runtime;
+  await assert.rejects(() => harness.host.applyTransition({
+    kind: "cwd",
+    cwd: nextCwd,
+    source: "new_session",
+  }), /new_session target cwd must match current runtime cwd/);
+
+  assert.equal(firstRuntime.newCalls, 0);
+  assert.equal(firstRuntime.disposed, false);
+  assert.equal(harness.created.length, 1);
+  assert.deepEqual(harness.persisted, []);
+  assert.equal(harness.detached, 0);
+  assert.deepEqual(harness.host.selectedTarget, {
+    kind: "session",
+    sessionPath: "/tmp/current.jsonl",
+    cwd,
+    source: "recovery",
+  });
+});
+
+test("open cwd transitions with a different cwd replace the runtime", async () => {
+  const cwd = "/tmp/project";
+  const nextCwd = "/tmp/other";
+  const harness = createHarness();
+
+  await harness.host.start({ kind: "session", sessionPath: "/tmp/current.jsonl", cwd, source: "recovery" });
+  const firstRuntime = harness.created[0].runtime;
+  const result = await harness.host.applyTransition({
+    kind: "cwd",
+    cwd: nextCwd,
+    source: "open_cwd",
+  });
+
+  assert.equal(firstRuntime.newCalls, 0);
+  assert.equal(firstRuntime.disposed, true);
+  assert.equal(harness.created.length, 2);
+  assert.deepEqual(result, {
+    cancelled: false,
+    target: { kind: "cwd", cwd: nextCwd, source: "recovery" },
+  });
+  assert.deepEqual(harness.persisted, [nextCwd]);
+  assert.equal(harness.detached, 1);
+  assert.deepEqual(harness.host.selectedTarget, result.target);
+});
+
 test("cancelled new session transitions leave the selected session target untouched", async () => {
   const cwd = "/tmp/project";
   const sessionPath = "/tmp/current.jsonl";
