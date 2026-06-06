@@ -86,6 +86,18 @@ if (window.visualViewport) {
 
 const INPUT_HISTORY_KEY = "pi-webui:input-history";
 const INPUT_HISTORY_LIMIT = 200;
+const COMMAND_RESULT_PACKET_TYPES = new Set([
+  "refresh",
+  "prompt",
+  "abort",
+  "new_session",
+  "switch_session",
+  "cycle_model",
+  "set_session_name",
+  "bash",
+  "select_cwd",
+  "select_session",
+]);
 
 // matches server.mjs sanitizePromptImages — keep in sync
 const MAX_PASTED_IMAGES = 8;
@@ -387,7 +399,8 @@ function syncRunningButton() {
 
 function send(payload) {
   if (socket?.readyState === WebSocket.OPEN) {
-    urlState.observeCommandStarted(commandNameForOutgoingPayload(payload));
+    const command = commandNameForOutgoingPayload(payload);
+    if (command) urlState.observeCommandStarted(command);
     socket.send(JSON.stringify(payload));
   }
 }
@@ -400,7 +413,8 @@ function sendTransient(payload) {
 
 function commandNameForOutgoingPayload(payload) {
   if (payload?.type === "slash_command") return `slash:${payload.name || ""}`;
-  return payload?.type || "unknown";
+  if (COMMAND_RESULT_PACKET_TYPES.has(payload?.type)) return payload.type;
+  return null;
 }
 
 function setComposerBlocked(blocked) {
@@ -453,8 +467,8 @@ function handleRecoveryResult(payload) {
   }
 }
 
-function syncUrlForCommandResult(command, data) {
-  urlState.observeCommandSucceeded(command, data);
+function syncUrlForCommandResult(command, data, effects) {
+  urlState.observeCommandSucceeded(command, data, effects);
 }
 
 function isLogAtBottom() {
@@ -808,7 +822,7 @@ function connect() {
           csSetError(chatState, msg);
           renderStatusBar();
         } else {
-          syncUrlForCommandResult(packet.payload.command, packet.payload.data);
+          syncUrlForCommandResult(packet.payload.command, packet.payload.data, packet.payload.effects);
           handleSlashResult(packet.payload.data);
         }
         return;

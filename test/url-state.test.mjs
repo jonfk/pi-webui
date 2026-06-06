@@ -144,12 +144,15 @@ test("syncCwdPointer pushes when cwd changes and no-ops for same cwd", () => {
   assert.equal(location.href, "http://localhost/?cwd=%2Ftwo");
 });
 
-test("URL transition intent suppresses transient session state before cwd command result", () => {
+test("pending commands suppress transient session state before runtime target effects", () => {
   const { state, calls, location } = makeTracker("http://localhost/?session=%2Ftmp%2Fold.jsonl");
 
-  state.observeCommandStarted("slash:new");
+  state.observeCommandStarted("sidebar:new-session");
   state.observeSessionState({ sessionFile: "/tmp/fresh-empty.jsonl" });
-  state.observeCommandSucceeded("slash:new", { cwd: "/work/project" });
+  state.observeCommandSucceeded("sidebar:new-session", { cwd: "/work/project" }, [{
+    type: "runtime_target_changed",
+    target: { kind: "cwd", cwd: "/work/project" },
+  }]);
 
   assert.deepEqual(calls.map((c) => c[0]), ["pushState"]);
   assert.equal(location.href, "http://localhost/?cwd=%2Fwork%2Fproject");
@@ -166,18 +169,42 @@ test("picker-only resume command does not change URL state", () => {
   assert.equal(location.href, "http://localhost/?cwd=%2Fwork");
 });
 
-test("recovery target commands update URL state from command data", () => {
+test("runtime target effects update URL state without relying on command names", () => {
   const cwd = makeTracker("http://localhost/?session=%2Ftmp%2Fbad.jsonl");
-  cwd.state.observeCommandStarted("select_cwd");
-  cwd.state.observeCommandSucceeded("select_cwd", { cwd: "/work/project" });
+  cwd.state.observeCommandStarted("sidebar:new-session");
+  cwd.state.observeCommandSucceeded("sidebar:new-session", { cwd: "/work/project" }, [{
+    type: "runtime_target_changed",
+    target: { kind: "cwd", cwd: "/work/project" },
+  }]);
   assert.deepEqual(cwd.calls.map((c) => c[0]), ["pushState"]);
   assert.equal(cwd.location.href, "http://localhost/?cwd=%2Fwork%2Fproject");
 
   const session = makeTracker("http://localhost/?cwd=%2Fwork");
-  session.state.observeCommandStarted("select_session");
-  session.state.observeCommandSucceeded("select_session", { sessionPath: "/tmp/recovered.jsonl" });
+  session.state.observeCommandStarted("sidebar:session");
+  session.state.observeCommandSucceeded("sidebar:session", { sessionPath: "/tmp/recovered.jsonl" }, [{
+    type: "runtime_target_changed",
+    target: {
+      kind: "session",
+      sessionPath: "/tmp/recovered.jsonl",
+      cwd: "/work/project",
+    },
+  }]);
   assert.deepEqual(session.calls.map((c) => c[0]), ["pushState"]);
   assert.equal(session.location.href, "http://localhost/?session=%2Ftmp%2Frecovered.jsonl");
+});
+
+test("legacy command data without semantic effects does not update URL state", () => {
+  const cwd = makeTracker("http://localhost/?session=%2Ftmp%2Fbad.jsonl");
+  cwd.state.observeCommandStarted("select_cwd");
+  cwd.state.observeCommandSucceeded("select_cwd", { cwd: "/work/project" });
+  assert.deepEqual(cwd.calls, []);
+  assert.equal(cwd.location.href, "http://localhost/?session=%2Ftmp%2Fbad.jsonl");
+
+  const session = makeTracker("http://localhost/?cwd=%2Fwork");
+  session.state.observeCommandStarted("select_session");
+  session.state.observeCommandSucceeded("select_session", { sessionPath: "/tmp/recovered.jsonl" });
+  assert.deepEqual(session.calls, []);
+  assert.equal(session.location.href, "http://localhost/?cwd=%2Fwork");
 });
 
 test("installPopstateReload registers one Back/Forward reload handler", () => {

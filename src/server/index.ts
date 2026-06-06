@@ -70,6 +70,11 @@ import {
 } from "./target-transitions.js";
 import { RuntimeTargetHost } from "./runtime-target-host.js";
 import { createFileCompletionEndpoint } from "./file-completion-endpoint.js";
+import {
+  commandSuccessPayload,
+  runtimeTargetChangedEffect,
+  withCommandEffects,
+} from "./command-effects.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -323,7 +328,8 @@ const SLASH_HANDLERS = {
     const transition = ctrl.resolveNewSessionTransition();
     const result = await ctrl.applyTargetTransition(transition);
     if (result.cancelled) return { cancelled: true };
-    return { cwd: transition.cwd };
+    const data = { cwd: transition.cwd };
+    return withCommandEffects(data, [runtimeTargetChangedEffect(result.target)]);
   },
   compact: async (ctrl, arg) => {
     const result = await ctrl.session.compact(arg || undefined);
@@ -450,7 +456,8 @@ const SLASH_HANDLERS = {
       const target = ctrl.adoptCurrentSessionTarget({ persistLastCwd: false });
       await ctrl.bindSession();
       await ctrl.sendBootstrap();
-      return { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
+      const data = { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
+      return withCommandEffects(data, [runtimeTargetChangedEffect(target)]);
     }
     return result;
   },
@@ -463,7 +470,8 @@ const SLASH_HANDLERS = {
       const target = ctrl.adoptCurrentSessionTarget({ persistLastCwd: false });
       await ctrl.bindSession();
       await ctrl.sendBootstrap();
-      return { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
+      const data = { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
+      return withCommandEffects(data, [runtimeTargetChangedEffect(target)]);
     }
     return result;
   },
@@ -476,7 +484,8 @@ const SLASH_HANDLERS = {
         const target = ctrl.adoptCurrentSessionTarget({ persistLastCwd: false });
         await ctrl.bindSession();
         await ctrl.sendBootstrap();
-        return { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
+        const data = { ...result, sessionPath: target.sessionPath, cwd: target.cwd };
+        return withCommandEffects(data, [runtimeTargetChangedEffect(target)]);
       }
       return result;
     }
@@ -589,8 +598,10 @@ const SLASH_HANDLERS = {
         source: "slash_cwd",
       });
       const unchanged = ctrl.selectedTarget?.kind === "cwd" && ctrl.selectedTarget.cwd === transition.cwd;
-      await ctrl.applyTargetTransition(transition);
-      return { cwd: transition.cwd, ...(unchanged ? { unchanged: true } : {}) };
+      const result = await ctrl.applyTargetTransition(transition);
+      if (result.cancelled) return { cancelled: true };
+      const data = { cwd: transition.cwd, ...(unchanged ? { unchanged: true } : {}) };
+      return withCommandEffects(data, [runtimeTargetChangedEffect(result.target)]);
     }
     return {
       needsPicker: "cwd",
@@ -609,12 +620,14 @@ const SLASH_HANDLERS = {
         policy: cwdPolicy,
       });
       const unchanged = ctrl.selectedTarget?.kind === "cwd" && ctrl.selectedTarget.cwd === transition.cwd;
-      await ctrl.applyTargetTransition(transition);
-      return {
+      const result = await ctrl.applyTargetTransition(transition);
+      if (result.cancelled) return { cancelled: true };
+      const data = {
         workspace: serializeWorkspace(transition.workspace),
         cwd: transition.cwd,
         ...(unchanged ? { unchanged: true } : {}),
       };
+      return withCommandEffects(data, [runtimeTargetChangedEffect(result.target)]);
     }
     return {
       needsPicker: "workspace",
@@ -1141,8 +1154,8 @@ class NativePiSessionController {
 
   async runCommand(command, handler) {
     try {
-      const data = await handler();
-      sendJson(this.ws, { type: "command_result", payload: { command, ok: true, data } });
+      const result = await handler();
+      sendJson(this.ws, { type: "command_result", payload: commandSuccessPayload(command, result) });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn("command failed", { command, error: message });
@@ -1238,7 +1251,8 @@ class NativePiSessionController {
           const transition = this.resolveNewSessionTransition();
           const result = await this.applyTargetTransition(transition);
           if (result.cancelled) return { cancelled: true };
-          return { cwd: transition.cwd };
+          const data = { cwd: transition.cwd };
+          return withCommandEffects(data, [runtimeTargetChangedEffect(result.target)]);
         });
         return;
 
@@ -1257,7 +1271,8 @@ class NativePiSessionController {
           });
           const result = await this.applyTargetTransition(transition);
           if (result.cancelled) return { cancelled: true };
-          return { sessionPath: transition.sessionPath, cwd: transition.cwd };
+          const data = { sessionPath: transition.sessionPath, cwd: transition.cwd };
+          return withCommandEffects(data, [runtimeTargetChangedEffect(result.target)]);
         });
         return;
 
@@ -1497,24 +1512,23 @@ class NativePiSessionController {
         sendJson(this.ws, { type: "command_result", payload: { command, ok: true, data: { cancelled: true } } });
         return;
       }
+      this.startupBlock = null;
+      this.sendConnected();
+      await this.sendBootstrap({ reset: true });
+      const data = transition.kind === "session"
+        ? { sessionPath: transition.sessionPath, cwd: transition.cwd }
+        : { cwd: transition.cwd };
+      sendJson(this.ws, {
+        type: "command_result",
+        payload: commandSuccessPayload(
+          command,
+          withCommandEffects(data, [runtimeTargetChangedEffect(result.target)]),
+        ),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(this.ws, { type: "command_result", payload: { command, ok: false, error: message } });
-      return;
     }
-    this.startupBlock = null;
-    this.sendConnected();
-    await this.sendBootstrap({ reset: true });
-    sendJson(this.ws, {
-      type: "command_result",
-      payload: {
-        command,
-        ok: true,
-        data: transition.kind === "session"
-          ? { sessionPath: transition.sessionPath, cwd: transition.cwd }
-          : { cwd: transition.cwd },
-      },
-    });
   }
 
   async close() {

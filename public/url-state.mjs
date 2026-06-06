@@ -43,7 +43,7 @@ export function makeCwdUrl(cwd, href) {
 
 export function createBrowserUrlState({ location, history, reload, addEventListener }) {
   let cwdPointerPromptSent = false;
-  let pendingUrlTransition = null;
+  let pendingCommand = null;
   let latestSessionFile = null;
   let popstateInstalled = false;
   const on = addEventListener || globalThis.addEventListener?.bind(globalThis);
@@ -116,43 +116,52 @@ export function createBrowserUrlState({ location, history, reload, addEventListe
         return;
       }
 
-      const intent = urlTransitionIntent(command);
-      if (intent) pendingUrlTransition = { command, intent };
+      pendingCommand = command;
     },
 
     observeSessionState(sessionState) {
       latestSessionFile = sessionState?.sessionFile || null;
-      if (pendingUrlTransition) return;
+      if (pendingCommand) return;
       this.syncDurableSession(latestSessionFile);
     },
 
-    observeCommandSucceeded(command, data) {
+    observeCommandSucceeded(command, data, effects = []) {
       if (command === "prompt") {
         this.promoteAcceptedCwdPointerPrompt(latestSessionFile);
         cwdPointerPromptSent = false;
         return;
       }
 
-      const transition = consumeUrlTransition(command);
-      const intent = transition?.intent || urlTransitionIntent(command);
-      if (intent === "cwd") {
-        if (typeof data?.cwd === "string") this.syncCwdPointer(data.cwd);
-        return;
-      }
-      if (intent === "session") {
-        if (typeof data?.sessionPath === "string") {
-          const state = this.current();
-          if (state.kind === "session" && state.sessionFile === data.sessionPath) return;
-          push(makeSessionUrl(data.sessionPath, location.href));
-          return;
-        }
-        this.syncDurableSession(latestSessionFile, { allowFromCwdPointer: true });
+      consumePendingCommand(command);
+      for (const effect of effects) {
+        if (effect?.type !== "runtime_target_changed") continue;
+        this.applyRuntimeTargetChangedEffect(effect);
       }
     },
 
     observeCommandFailed(command) {
       if (command === "prompt") cwdPointerPromptSent = false;
-      consumeUrlTransition(command);
+      consumePendingCommand(command);
+    },
+
+    applyRuntimeTargetChangedEffect(effect) {
+      const target = effect?.target;
+      if (target?.kind === "cwd") {
+        if (typeof target.cwd !== "string") throw new Error("runtime_target_changed cwd effect is missing cwd");
+        this.syncCwdPointer(target.cwd);
+        return;
+      }
+      if (target?.kind === "session") {
+        if (typeof target.sessionPath !== "string") {
+          throw new Error("runtime_target_changed session effect is missing sessionPath");
+        }
+        if (typeof target.cwd !== "string") throw new Error("runtime_target_changed session effect is missing cwd");
+        const state = this.current();
+        if (state.kind === "session" && state.sessionFile === target.sessionPath) return;
+        push(makeSessionUrl(target.sessionPath, location.href));
+        return;
+      }
+      throw new Error("runtime_target_changed effect has an unknown target kind");
     },
 
     navigateToSession(sessionFile) {
@@ -164,12 +173,9 @@ export function createBrowserUrlState({ location, history, reload, addEventListe
     },
   };
 
-  function consumeUrlTransition(command) {
-    if (!pendingUrlTransition) return null;
-    if (pendingUrlTransition.command !== command) return null;
-    const transition = pendingUrlTransition;
-    pendingUrlTransition = null;
-    return transition;
+  function consumePendingCommand(command) {
+    if (pendingCommand !== command) return;
+    pendingCommand = null;
   }
 }
 
@@ -180,26 +186,4 @@ function copyUrlStateParam(source, target, name) {
 
 function absoluteBase(href) {
   return new URL(href || "/", "http://localhost/");
-}
-
-function urlTransitionIntent(command) {
-  if (
-    command === "new_session" ||
-    command === "select_cwd" ||
-    command === "slash:new" ||
-    command === "slash:cwd" ||
-    command === "slash:workspace"
-  ) {
-    return "cwd";
-  }
-  if (
-    command === "select_session" ||
-    command === "switch_session" ||
-    command === "slash:import" ||
-    command === "slash:clone" ||
-    command === "slash:fork"
-  ) {
-    return "session";
-  }
-  return null;
 }
