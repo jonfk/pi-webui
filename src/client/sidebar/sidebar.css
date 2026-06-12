@@ -1,0 +1,11 @@
+#workspace-sidebar-root {
+  display: contents;
+}
+
+.prototype-workspace-sidebar {
+  border-right: 1px solid var(--border, #2a2f3a);
+  color: var(--muted, #9ca3af);
+  font: 12px/1.4 system-ui, sans-serif;
+  min-width: 220px;
+  padding: 12px;
+}

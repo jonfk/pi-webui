@@ -2,8 +2,9 @@
 // @ts-nocheck
 import { createServer } from "node:http";
 import { createReadStream, existsSync, readFileSync, watch as fsWatch } from "node:fs";
-import { extname, dirname, join, resolve } from "node:path";
+import { extname, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { nodeHTTPRequestHandler } from "@trpc/server/adapters/node-http";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   createAgentSessionFromServices,
@@ -77,6 +78,8 @@ import {
   runtimeTargetChangedEffect,
   withCommandEffects,
 } from "./command-effects.js";
+import { appRouter } from "./sidebar-router.js";
+import { WorkspaceIndexService } from "./workspace-index.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4096;
@@ -173,6 +176,7 @@ const port = listenFromArg?.port ?? Number(process.env.PI_WEBUI_PORT || DEFAULT_
 // after build the script lives at dist/server/index.js; public/ stays at the
 // package root, so walk up two levels from import.meta.url.
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "public");
+const clientDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "client");
 const HOME_DIR = process.env.HOME || "";
 const ALLOW_ANY_CWD = process.env.PI_WEBUI_CWD_ALLOW_ANY === "1";
 const cwdPolicy = { homeDir: HOME_DIR, allowAnyCwd: ALLOW_ANY_CWD };
@@ -288,18 +292,33 @@ function sendFile(res, filePath) {
   createReadStream(filePath).pipe(res);
 }
 
-function serveStatic(req, res) {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
-  const filePath = resolve(join(publicDir, pathname));
+function sendNotFound(res) {
+  res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({ error: "Not found" }));
+}
 
-  if (!filePath.startsWith(publicDir) || !existsSync(filePath)) {
-    res.writeHead(404, { "content-type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: "Not found" }));
+function serveStaticFromRoot(res, rootDir, pathname) {
+  const filePath = resolve(join(rootDir, pathname));
+
+  if (!(filePath === rootDir || filePath.startsWith(rootDir + sep)) || !existsSync(filePath)) {
+    sendNotFound(res);
     return;
   }
 
   sendFile(res, filePath);
+}
+
+function serveClientStatic(req, res, url) {
+  const prefix = "/client/";
+  if (!url.pathname.startsWith(prefix)) return false;
+  serveStaticFromRoot(res, clientDir, url.pathname.slice(prefix.length));
+  return true;
+}
+
+function serveStatic(req, res) {
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+  serveStaticFromRoot(res, publicDir, pathname);
 }
 
 // Built-in slash commands that map cleanly to SDK calls. Commands that require
@@ -1575,8 +1594,24 @@ export class NativePiSessionController {
   }
 }
 
-export function startServer() {
+export function startServer(options = {}) {
+  const listenHost = options.host ?? host;
+  const listenPort = options.port ?? port;
+  const workspaceIndex = options.workspaceIndex ?? new WorkspaceIndexService({ agentDir });
   const server = createServer((req, res) => {
+    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    if (url.pathname === "/api/trpc" || url.pathname.startsWith("/api/trpc/")) {
+      const path = url.pathname === "/api/trpc" ? "" : url.pathname.slice("/api/trpc/".length);
+      void nodeHTTPRequestHandler({
+        router: appRouter,
+        req,
+        res,
+        path,
+        createContext: () => ({ workspaceIndex }),
+      });
+      return;
+    }
+    if (serveClientStatic(req, res, url)) return;
     serveStatic(req, res);
   });
 
@@ -1610,8 +1645,10 @@ export function startServer() {
     });
   });
 
-  server.listen(port, host, () => {
-    logger.info("listening", { url: `http://${host}:${port}`, agentDir });
+  server.listen(listenPort, listenHost, () => {
+    const address = server.address();
+    const boundPort = typeof address === "object" && address ? address.port : listenPort;
+    logger.info("listening", { url: `http://${listenHost}:${boundPort}`, agentDir });
   });
 
   return { server, wss };
