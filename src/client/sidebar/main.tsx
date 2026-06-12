@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../server/sidebar-router.js";
+import { IconChevron, IconFolder, IconPanelLeft, IconPlus, IconRefresh } from "./icons";
 import "./sidebar.css";
 
 const DESKTOP_QUERY = "(min-width: 900px)";
@@ -304,7 +305,7 @@ function WorkspaceSidebarApp() {
           title="Show workspace sidebar"
           onClick={isDesktop ? toggleDesktopVisible : () => setMobileOpen(true)}
         >
-          ws
+          <IconPanelLeft />
         </button>
       )}
       {!isDesktop && mobileOpen && (
@@ -336,13 +337,23 @@ function WorkspaceSidebar(props: {
   onHide(): void;
 }) {
   const workspaces = props.catalog?.workspaces ?? [];
+  const activeWorkspace = workspaces.find((workspace) => workspace.path === props.target.cwd) ?? null;
+  const activeSession = findSession(workspaces, props.pages, props.target.sessionFile);
+  const totalSessions = workspaces.reduce((sum, workspace) => sum + workspace.sessionCount, 0);
 
   return (
     <aside className="workspace-sidebar" aria-label="Workspace sidebar">
       <header className="workspace-sidebar__header">
-        <div>
-          <div className="workspace-sidebar__eyebrow">workspace</div>
-          <h2>Sessions</h2>
+        <div className="workspace-sidebar__context">
+          <div className="workspace-sidebar__context-workspace">
+            <IconFolder size={14} />
+            <span>{activeWorkspace?.name ?? "No workspace"}</span>
+          </div>
+          <div className="workspace-sidebar__context-detail">
+            {activeSession
+              ? sessionTitle(activeSession)
+              : `${workspaces.length} workspace${workspaces.length === 1 ? "" : "s"} · ${totalSessions} session${totalSessions === 1 ? "" : "s"}`}
+          </div>
         </div>
         <div className="workspace-sidebar__actions">
           <button
@@ -353,7 +364,7 @@ function WorkspaceSidebar(props: {
             disabled={props.refreshing}
             onClick={props.onRefresh}
           >
-            {props.refreshing ? "..." : "ref"}
+            <IconRefresh className={props.refreshing ? "workspace-sidebar__spin" : undefined} />
           </button>
           <button
             className="workspace-sidebar__icon-button"
@@ -362,7 +373,7 @@ function WorkspaceSidebar(props: {
             title="Hide workspace sidebar"
             onClick={props.onHide}
           >
-            x
+            <IconPanelLeft />
           </button>
         </div>
       </header>
@@ -441,11 +452,8 @@ function WorkspaceGroup(props: {
           aria-expanded={props.expanded}
           onClick={props.onToggle}
         >
-          <span className="workspace-group__chevron">{props.expanded ? "v" : ">"}</span>
-          <span className="workspace-group__identity">
-            <span className="workspace-group__name">{props.workspace.name}</span>
-            <span className="workspace-group__path">{compactPath(props.workspace.path)}</span>
-          </span>
+          <IconChevron size={14} className={`workspace-group__chevron${props.expanded ? " expanded" : ""}`} />
+          <span className="workspace-group__name" title={props.workspace.path}>{props.workspace.name}</span>
           <span className="workspace-group__count">{props.workspace.sessionCount}</span>
         </button>
         <button
@@ -455,7 +463,7 @@ function WorkspaceGroup(props: {
           title={`Start new session in ${props.workspace.name}`}
           onClick={props.onNewSession}
         >
-          +
+          <IconPlus size={14} />
         </button>
       </div>
 
@@ -486,7 +494,7 @@ function WorkspaceGroup(props: {
                   ? "refresh required"
                   : pageStatus === "error"
                     ? "retry show more"
-                    : "show more"}
+                    : `show ${Math.max(0, props.workspace.sessionCount - sessions.length)} more`}
             </button>
           )}
           {pageStatus === "stale" && (
@@ -506,7 +514,6 @@ function SessionRow(props: {
   active: boolean;
   onSelect(): void;
 }) {
-  const title = props.session.name || props.session.firstMessage || `${props.session.id.slice(0, 8)}...`;
   return (
     <button
       className={`session-row-sidebar${props.active ? " active" : ""}`}
@@ -514,19 +521,30 @@ function SessionRow(props: {
       aria-current={props.active ? "page" : undefined}
       onClick={props.onSelect}
     >
-      <span className="session-row-sidebar__title">{title}</span>
+      <span className="session-row-sidebar__title">{sessionTitle(props.session)}</span>
       <span className="session-row-sidebar__meta">
-        <span>{formatRelativeTime(props.session.modified)}</span>
-        <span>{props.session.messageCount} msg</span>
+        {formatRelativeTime(props.session.modified)} · {props.session.messageCount} msg
       </span>
     </button>
   );
 }
 
-function compactPath(path: string): string {
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length <= 3) return path;
-  return `.../${parts.slice(-3).join("/")}`;
+function sessionTitle(session: WorkspaceSession): string {
+  return session.name || session.firstMessage || `${session.id.slice(0, 8)}...`;
+}
+
+function findSession(
+  workspaces: WorkspaceIndexEntry[],
+  pages: Record<string, WorkspacePageState>,
+  sessionFile: string | null,
+): WorkspaceSession | null {
+  if (!sessionFile) return null;
+  for (const workspace of workspaces) {
+    const sessions = pages[workspace.path]?.sessions ?? workspace.sessionsWindow.sessions;
+    const match = sessions.find((session) => session.path === sessionFile);
+    if (match) return match;
+  }
+  return null;
 }
 
 function formatRelativeTime(iso: string): string {
