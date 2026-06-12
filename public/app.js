@@ -50,6 +50,7 @@ import {
 
 let socket;
 let currentSessionState = null;
+let connectedCwd = null;
 const chatState = createChatState();
 const urlState = createBrowserUrlState({
   location: window.location,
@@ -68,6 +69,43 @@ let invalidUrlState = null;
 let recoveryState = null;
 let startupBlocked = false;
 urlState.installPopstateReload();
+
+const sidebarCurrentTargetListeners = new Set();
+let sidebarCurrentTarget = { cwd: null, sessionFile: null };
+
+function getSidebarCurrentTarget() {
+  return sidebarCurrentTarget;
+}
+
+function computeSidebarCurrentTarget() {
+  return {
+    cwd: currentSessionState?.cwd || connectedCwd || null,
+    sessionFile: currentSessionState?.sessionFile || null,
+  };
+}
+
+function syncSidebarCurrentTarget() {
+  const next = computeSidebarCurrentTarget();
+  if (sidebarCurrentTarget.cwd === next.cwd && sidebarCurrentTarget.sessionFile === next.sessionFile) {
+    return;
+  }
+  sidebarCurrentTarget = next;
+  for (const listener of sidebarCurrentTargetListeners) listener();
+}
+
+window.piWebuiSidebarBridge = {
+  getCurrentTarget: getSidebarCurrentTarget,
+  openCwd(cwd) {
+    send({ type: "open_cwd", cwd });
+  },
+  switchSession(sessionPath) {
+    send({ type: "switch_session", sessionPath });
+  },
+  subscribeCurrentTarget(listener) {
+    sidebarCurrentTargetListeners.add(listener);
+    return () => sidebarCurrentTargetListeners.delete(listener);
+  },
+};
 
 // Track the visual viewport so the app shell shrinks when the mobile virtual
 // keyboard opens. Without this, `100vh` stays the full screen and the top of
@@ -428,6 +466,7 @@ function handleInvalidUrlState(payload) {
   invalidUrlState = payload || {};
   recoveryState = { kind: "invalid_url", payload: invalidUrlState };
   startupBlocked = true;
+  connectedCwd = null;
   setComposerBlocked(true);
   slashCommands = payload?.slashCommands || [];
   currentSessionState = null;
@@ -436,12 +475,14 @@ function handleInvalidUrlState(payload) {
   chatState.streamExtras.push(invalidUrlStateToChatItem(invalidUrlState));
   renderLog();
   renderStatusBar();
+  syncSidebarCurrentTarget();
 }
 
 function handleCwdRequired(payload) {
   invalidUrlState = null;
   recoveryState = { kind: "cwd_required", payload: payload || {} };
   startupBlocked = true;
+  connectedCwd = null;
   setComposerBlocked(true);
   slashCommands = payload?.slashCommands || [];
   currentSessionState = null;
@@ -450,6 +491,7 @@ function handleCwdRequired(payload) {
   chatState.streamExtras.push(cwdRequiredToChatItem(payload || {}));
   renderLog();
   renderStatusBar();
+  syncSidebarCurrentTarget();
 }
 
 function handleRecoveryResult(payload) {
@@ -750,6 +792,7 @@ function connect() {
         setComposerBlocked(false);
         slashCommands = packet.payload.slashCommands || [];
         homeDir = packet.payload.homeDir || "";
+        connectedCwd = packet.payload.cwd || null;
         if (!wasStartupBlocked) urlState.canonicalizeCwdPointer(packet.payload.cwd);
         logger.info("connected", {
           cwd: packet.payload.cwd,
@@ -762,6 +805,7 @@ function connect() {
           }
           showToast(`${packet.payload.diagnostics.length} startup diagnostic(s)`, "warning");
         }
+        syncSidebarCurrentTarget();
         return;
       case "session_state": {
         const prev = currentSessionState;
@@ -780,6 +824,7 @@ function connect() {
         currentSessionState = next;
         urlState.observeSessionState(next);
         renderStatusBar();
+        syncSidebarCurrentTarget();
         return;
       }
       case "message_history":
