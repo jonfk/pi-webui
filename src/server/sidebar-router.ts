@@ -9,7 +9,7 @@ export const appRouter = router({
     workspaceSessions: publicProcedure
       .input(z.object({
         workspacePath: z.string().min(1),
-        cursor: z.string().min(1).optional(),
+        cursor: z.string().min(1),
         limit: z.literal(10),
       }))
       .query(({ ctx, input }) => {

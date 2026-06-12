@@ -67,7 +67,7 @@ export class WorkspaceIndexService {
 
   async workspaceSessions(args: {
     workspacePath: string;
-    cursor?: string | null;
+    cursor: string;
     limit: number;
   }): Promise<WorkspaceSessionsPage> {
     if (args.limit !== WORKSPACE_SESSIONS_PAGE_LIMIT) {
@@ -80,11 +80,14 @@ export class WorkspaceIndexService {
 
     const sessions = (await this.#sortedSessions()).filter((session) => session.info.cwd === workspace.path);
     const listVersion = sessionListVersion(sessions);
-    const cursor = args.cursor ? decodeCursor(args.cursor) : null;
-    if (cursor && cursor.workspacePath !== workspace.path) {
+    const cursor = decodeCursor(args.cursor);
+    if (cursor.workspacePath !== workspace.path) {
       throw new Error("workspace sessions cursor does not match workspace");
     }
-    const offset = cursor?.offset ?? WORKSPACE_SESSIONS_WINDOW_LIMIT;
+    if (cursor.listVersion !== listVersion) {
+      throw new Error("stale workspace sessions cursor");
+    }
+    const offset = cursor.offset;
     const page = sessions.slice(offset, offset + args.limit);
     const nextOffset = offset + page.length;
 
@@ -147,7 +150,6 @@ function compareStrings(a: string, b: string): number {
 function sessionListVersion(sessions: IndexedSession[]): string {
   const signature = JSON.stringify(sessions.map((session) => ({
     path: session.serialized.path,
-    id: session.serialized.id,
     modified: session.serialized.modified,
     name: session.serialized.name ?? null,
     messageCount: session.serialized.messageCount,

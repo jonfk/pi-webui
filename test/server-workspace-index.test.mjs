@@ -126,6 +126,10 @@ test("workspace sessions reject malformed cursors unknown workspaces and unsuppo
     const service = makeService(agentDir, [session("s1", "/work/project", 1)]);
 
     await assert.rejects(
+      service.workspaceSessions({ workspacePath: "/work/project", limit: 10 }),
+      /invalid workspace sessions cursor/,
+    );
+    await assert.rejects(
       service.workspaceSessions({ workspacePath: "/work/project", cursor: "not-json", limit: 10 }),
       /invalid workspace sessions cursor/,
     );
@@ -142,23 +146,48 @@ test("workspace sessions reject malformed cursors unknown workspaces and unsuppo
   }
 });
 
-test("workspace sessions surface changed list versions on stale cursors", async () => {
+test("workspace sessions reject stale cursors when the matching session list changes", async () => {
   const agentDir = tempAgentDir();
   try {
     addWorkspace(agentDir, "/work/project", "project");
     const sessions = Array.from({ length: 7 }, (_, index) => session(`s${index}`, "/work/project", index));
     const service = makeService(agentDir, sessions);
     const workspace = (await service.workspaceIndex()).workspaces[0];
-    const originalVersion = workspace.sessionsWindow.listVersion;
 
     sessions.unshift(session("newest", "/work/project", 99));
-    const page = await service.workspaceSessions({
-      workspacePath: "/work/project",
-      cursor: workspace.sessionsWindow.nextCursor,
-      limit: 10,
-    });
+    await assert.rejects(
+      service.workspaceSessions({
+        workspacePath: "/work/project",
+        cursor: workspace.sessionsWindow.nextCursor,
+        limit: 10,
+      }),
+      /stale workspace sessions cursor/,
+    );
+  } finally {
+    rmSync(agentDir, { recursive: true, force: true });
+  }
+});
 
-    assert.notEqual(page.listVersion, originalVersion);
+test("workspace sessions reject cursors issued for another workspace", async () => {
+  const agentDir = tempAgentDir();
+  try {
+    addWorkspace(agentDir, "/work/alpha", "alpha");
+    addWorkspace(agentDir, "/work/beta", "beta");
+    const sessions = [
+      ...Array.from({ length: 6 }, (_, index) => session(`a${index}`, "/work/alpha", index)),
+      ...Array.from({ length: 6 }, (_, index) => session(`b${index}`, "/work/beta", index)),
+    ];
+    const service = makeService(agentDir, sessions);
+    const alpha = (await service.workspaceIndex()).workspaces.find((entry) => entry.path === "/work/alpha");
+
+    await assert.rejects(
+      service.workspaceSessions({
+        workspacePath: "/work/beta",
+        cursor: alpha.sessionsWindow.nextCursor,
+        limit: 10,
+      }),
+      /workspace sessions cursor does not match workspace/,
+    );
   } finally {
     rmSync(agentDir, { recursive: true, force: true });
   }

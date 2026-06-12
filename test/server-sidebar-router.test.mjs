@@ -27,15 +27,30 @@ test("sidebar tRPC router exposes workspace index and validates page input", asy
     addWorkspace(agentDir, "/work/project", "project");
     const workspaceIndex = new WorkspaceIndexService({
       agentDir,
-      listSessions: async () => [session("s1", "/work/project", 1)],
+      listSessions: async () => Array.from({ length: 6 }, (_, index) => session(`s${index}`, "/work/project", index)),
     });
     const caller = appRouter.createCaller({ workspaceIndex });
 
     const index = await caller.sidebar.workspaceIndex();
     assert.equal(index.workspaces[0].path, "/work/project");
 
+    const page = await caller.sidebar.workspaceSessions({
+      workspacePath: "/work/project",
+      cursor: index.workspaces[0].sessionsWindow.nextCursor,
+      limit: 10,
+    });
+    assert.deepEqual(page.sessions.map((entry) => entry.id), ["s0"]);
+
     await assert.rejects(
-      caller.sidebar.workspaceSessions({ workspacePath: "/work/project", limit: 5 }),
+      caller.sidebar.workspaceSessions({ workspacePath: "/work/project", limit: 10 }),
+      /Invalid input/,
+    );
+    await assert.rejects(
+      caller.sidebar.workspaceSessions({
+        workspacePath: "/work/project",
+        cursor: index.workspaces[0].sessionsWindow.nextCursor,
+        limit: 5,
+      }),
       /Invalid input/,
     );
   } finally {
