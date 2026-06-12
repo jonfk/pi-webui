@@ -30,3 +30,22 @@ test("shell owns the sidebar runtime bridge before the React island mounts", () 
   assert.match(app, /syncSidebarCurrentTarget\(\)/);
   assert.match(sidebarEntry, /window\.piWebuiSidebarBridge is required before mounting the sidebar/);
 });
+
+test("sidebar client owns phase four UI state over typed tRPC reads", () => {
+  const root = packageRoot.pathname;
+  const sidebarEntry = readFileSync(join(root, "src/client/sidebar/main.tsx"), "utf8");
+  const sidebarCss = readFileSync(join(root, "src/client/sidebar/sidebar.css"), "utf8");
+
+  assert.match(sidebarEntry, /inferRouterOutputs<AppRouter>/);
+  assert.match(sidebarEntry, /\/api\/trpc\/\$\{path\}/);
+  assert.match(sidebarEntry, /pi-webui:sidebar-visible/);
+  assert.match(sidebarEntry, /pi-webui:sidebar-expanded-workspaces/);
+  assert.match(sidebarEntry, /workspaceSessions\(\{/);
+  assert.match(sidebarEntry, /limit:\s*PAGE_LIMIT/);
+  assert.match(sidebarEntry, /stale workspace sessions cursor/);
+  assert.match(sidebarEntry, /bridge\.openCwd\(cwd\)/);
+  assert.match(sidebarEntry, /bridge\.switchSession\(sessionPath\)/);
+  assert.match(sidebarCss, /workspace-sidebar-desktop-visible \.app-shell/);
+  assert.match(sidebarCss, /@media \(max-width: 899px\)/);
+  assert.match(sidebarCss, /\.workspace-sidebar-backdrop/);
+});
