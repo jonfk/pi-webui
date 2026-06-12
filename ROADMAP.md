@@ -35,7 +35,7 @@
 [x] `--listen <host:port>` cli flag
 [x] ipv6 bind support
 [x] `HOST` / `PORT` env vars
-[x] `PI_PROJECT_CWD` / `PI_AGENT_DIR` / `PI_SESSION_DIR` overrides
+[x] `PI_CODING_AGENT_DIR` agent storage override
 [x] session file watching for external changes
 [x] event log for replay and debugging
 [x] static asset vendoring via `make vendor`

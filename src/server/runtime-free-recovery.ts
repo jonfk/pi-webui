@@ -71,7 +71,6 @@ export function selectRecoveryCwd(args: {
 
 export function selectRecoverySession(args: {
   sessionPath: string;
-  sessionDir?: string;
   policy: CwdPolicy;
 }): { ok: true; target: RecoveryTarget } | { ok: false; error: string } {
   const sessionValidation = validateSessionPointer(args.sessionPath);
@@ -80,7 +79,7 @@ export function selectRecoverySession(args: {
   }
 
   try {
-    const sessionManager = SessionManager.open(args.sessionPath, args.sessionDir);
+    const sessionManager = SessionManager.open(args.sessionPath);
     return {
       ok: true,
       target: {

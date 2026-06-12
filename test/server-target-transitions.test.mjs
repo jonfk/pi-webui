@@ -22,20 +22,18 @@ function makeFixture() {
   const cwd = join(homeDir, "project");
   const otherCwd = join(homeDir, "other");
   const outside = join(root, "outside");
-  const sessionDir = join(root, "sessions");
   const agentDir = join(root, "agent");
   mkdirSync(cwd, { recursive: true });
   mkdirSync(otherCwd, { recursive: true });
   mkdirSync(outside, { recursive: true });
-  mkdirSync(sessionDir, { recursive: true });
   mkdirSync(agentDir, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   return {
     root,
     homeDir,
     cwd,
     otherCwd,
     outside,
-    sessionDir,
     agentDir,
     policy: { homeDir, allowAnyCwd: false },
   };
@@ -182,7 +180,6 @@ test("session transition resolves header cwd and rejects bad sessions before run
 
   assert.deepEqual(resolveSessionTransition({
     sessionPath,
-    sessionDir: fixture.sessionDir,
     policy: fixture.policy,
     source: "picker",
   }), {
@@ -193,14 +190,12 @@ test("session transition resolves header cwd and rejects bad sessions before run
   });
   assert.equal(shouldPersistLastCwd(resolveSessionTransition({
     sessionPath,
-    sessionDir: fixture.sessionDir,
     policy: fixture.policy,
     source: "import",
   })), false);
 
   assert.throws(() => resolveSessionTransition({
     sessionPath: join(fixture.root, "missing.jsonl"),
-    sessionDir: fixture.sessionDir,
     policy: fixture.policy,
     source: "switch_session",
   }), /path does not exist/);
@@ -209,7 +204,6 @@ test("session transition resolves header cwd and rejects bad sessions before run
   writeSessionFile(outsideSession, fixture.outside);
   assert.throws(() => resolveSessionTransition({
     sessionPath: outsideSession,
-    sessionDir: fixture.sessionDir,
     policy: fixture.policy,
     source: "switch_session",
   }), /path must be inside/);

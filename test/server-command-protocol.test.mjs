@@ -10,18 +10,15 @@ function makeFixture() {
   const cwd = join(homeDir, "project");
   const otherCwd = join(homeDir, "other");
   const agentDir = join(root, "agent");
-  const sessionDir = join(root, "sessions");
   mkdirSync(cwd, { recursive: true });
   mkdirSync(otherCwd, { recursive: true });
   mkdirSync(agentDir, { recursive: true });
-  mkdirSync(sessionDir, { recursive: true });
-  return { root, homeDir, cwd, otherCwd, agentDir, sessionDir };
+  return { root, homeDir, cwd, otherCwd, agentDir };
 }
 
 const fixture = makeFixture();
 process.env.HOME = fixture.homeDir;
-process.env.PI_AGENT_DIR = fixture.agentDir;
-process.env.PI_SESSION_DIR = fixture.sessionDir;
+process.env.PI_CODING_AGENT_DIR = fixture.agentDir;
 delete process.env.PI_WEBUI_CWD_ALLOW_ANY;
 
 const { NativePiSessionController } = await import("../dist/server/index.js");

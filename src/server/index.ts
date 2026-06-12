@@ -131,8 +131,7 @@ function printHelp() {
     "environment variables:",
     `  PI_WEBUI_HOST     http bind host (default ${DEFAULT_HOST})`,
     `  PI_WEBUI_PORT     http bind port (default ${DEFAULT_PORT})`,
-    "  PI_AGENT_DIR      pi agent config directory (default ~/.pi/agent)",
-    "  PI_SESSION_DIR    session storage directory (default pi default)",
+    "  PI_CODING_AGENT_DIR  pi agent config directory (default ~/.pi/agent)",
     "",
     "examples:",
     "  pi-webui --listen 0.0.0.0:3000",
@@ -208,8 +207,7 @@ async function collectRecentCwds() {
   }
   return [...seen.values()].sort((a, b) => b.modified - a.modified);
 }
-const agentDir = process.env.PI_AGENT_DIR || getAgentDir();
-const sessionDir = process.env.PI_SESSION_DIR;
+const agentDir = getAgentDir();
 
 function serializeWorkspace(workspace) {
   return {
@@ -452,7 +450,6 @@ const SLASH_HANDLERS = {
     const importPath = resolveCommandPath(path);
     resolveSessionTransition({
       sessionPath: importPath,
-      sessionDir,
       policy: cwdPolicy,
       source: "import",
     });
@@ -660,7 +657,7 @@ const SLASH_HANDLERS = {
     return {
       needsPicker: "session",
       currentSessionFile: ctrl.session.sessionFile || null,
-      sessions: await listSerializedSessions({ cwd: ctrl.runtime.cwd, sessionDir }),
+      sessions: await listSerializedSessions({ cwd: ctrl.runtime.cwd }),
     };
   },
 };
@@ -697,7 +694,7 @@ export class NativePiSessionController {
       createRuntimeForTarget: (target) => createAgentSessionRuntime(createRuntime, {
         cwd: target.cwd,
         agentDir,
-        sessionManager: runtimeSessionManagerForTarget({ target, sessionDir }),
+        sessionManager: runtimeSessionManagerForTarget({ target }),
       }),
       bindRuntime: () => this.bindSession(),
       beforeSessionInvalidate: () => this.detachSessionBinding(),
@@ -734,7 +731,6 @@ export class NativePiSessionController {
     const target = await resolveRuntimeTarget({
       urlState: this.urlState,
       agentDir,
-      sessionDir,
       policy: cwdPolicy,
     });
 
@@ -1058,7 +1054,7 @@ export class NativePiSessionController {
   async sendSessions() {
     sendJson(this.ws, {
       type: "sessions",
-      payload: await listSerializedSessions({ cwd: this.runtime.cwd, sessionDir }),
+      payload: await listSerializedSessions({ cwd: this.runtime.cwd }),
     });
   }
 
@@ -1289,7 +1285,6 @@ export class NativePiSessionController {
           logger.info("switch session", { sessionPath });
           const transition = resolveSessionTransition({
             sessionPath,
-            sessionDir,
             policy: cwdPolicy,
             source: "switch_session",
           });
@@ -1459,7 +1454,6 @@ export class NativePiSessionController {
         const command = "select_session";
         await this.runRuntimeFreeTransition(command, () => resolveSessionTransition({
           sessionPath: String(payload.sessionPath || "").trim(),
-          sessionDir,
           policy: cwdPolicy,
           source: "picker",
         }));
@@ -1617,7 +1611,7 @@ export function startServer() {
   });
 
   server.listen(port, host, () => {
-    logger.info("listening", { url: `http://${host}:${port}`, agentDir, sessionDir: sessionDir || undefined });
+    logger.info("listening", { url: `http://${host}:${port}`, agentDir });
   });
 
   return { server, wss };

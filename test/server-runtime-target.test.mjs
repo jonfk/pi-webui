@@ -16,18 +16,16 @@ function makeFixture() {
   const homeDir = join(root, "home");
   const cwd = join(homeDir, "project");
   const otherCwd = join(homeDir, "other");
-  const sessionDir = join(root, "sessions");
   const agentDir = join(root, "agent");
   mkdirSync(cwd, { recursive: true });
   mkdirSync(otherCwd, { recursive: true });
-  mkdirSync(sessionDir, { recursive: true });
   mkdirSync(agentDir, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   return {
     root,
     homeDir,
     cwd,
     otherCwd,
-    sessionDir,
     agentDir,
     policy: { homeDir, allowAnyCwd: false },
   };
@@ -48,7 +46,6 @@ function resolveWithFixture(fixture, urlState) {
   return resolveRuntimeTarget({
     urlState,
     agentDir: fixture.agentDir,
-    sessionDir: fixture.sessionDir,
     policy: fixture.policy,
   });
 }
@@ -145,7 +142,6 @@ test("runtimeSessionManagerForTarget creates managers for valid runtime targets"
   const fixture = makeFixture();
   const cwdManager = runtimeSessionManagerForTarget({
     target: { kind: "cwd", source: "url", cwd: fixture.cwd },
-    sessionDir: fixture.sessionDir,
   });
   assert.equal(cwdManager.getCwd(), fixture.cwd);
 
@@ -153,7 +149,6 @@ test("runtimeSessionManagerForTarget creates managers for valid runtime targets"
   writeSessionFile(sessionPath, fixture.otherCwd);
   const sessionManager = runtimeSessionManagerForTarget({
     target: { kind: "session", source: "url", sessionPath, cwd: fixture.otherCwd },
-    sessionDir: fixture.sessionDir,
   });
   assert.equal(sessionManager.getCwd(), fixture.otherCwd);
   assert.equal(sessionManager.getSessionFile(), sessionPath);

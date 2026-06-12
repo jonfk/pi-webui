@@ -16,10 +16,9 @@ type ValidRuntimeTarget = Extract<RuntimeTarget, { kind: "cwd" | "session" }>;
 export async function resolveRuntimeTarget(args: {
   urlState: ServerUrlState;
   agentDir: string;
-  sessionDir?: string;
   policy: CwdPolicy;
 }): Promise<RuntimeTarget> {
-  const { urlState, agentDir, sessionDir, policy } = args;
+  const { urlState, agentDir, policy } = args;
 
   if (urlState.kind === "cwd") {
     return { kind: "cwd", cwd: urlState.cwd, source: "url" };
@@ -45,7 +44,7 @@ export async function resolveRuntimeTarget(args: {
       };
     }
 
-    const sessionManager = SessionManager.open(urlState.sessionPath, sessionDir);
+    const sessionManager = SessionManager.open(urlState.sessionPath);
     const sessionCwd = sessionManager.getCwd();
     try {
       return {
@@ -107,12 +106,11 @@ export function cwdRequiredPayloadForTarget(
 
 export function runtimeSessionManagerForTarget(args: {
   target: ValidRuntimeTarget;
-  sessionDir?: string;
 }): SessionManager {
   if (args.target.kind === "cwd") {
-    return SessionManager.create(args.target.cwd, args.sessionDir);
+    return SessionManager.create(args.target.cwd);
   }
-  return SessionManager.open(args.target.sessionPath, args.sessionDir);
+  return SessionManager.open(args.target.sessionPath);
 }
 
 export function assertRuntimeMatchesTarget(args: {

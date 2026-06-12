@@ -97,7 +97,6 @@ export function resolveWorkspaceTransition(args: {
 
 export function resolveSessionTransition(args: {
   sessionPath: string;
-  sessionDir?: string;
   policy: CwdPolicy;
   source: SessionTransitionSource;
 }): TargetTransition {
@@ -106,7 +105,7 @@ export function resolveSessionTransition(args: {
     throw new Error(sessionValidation.reason);
   }
 
-  const sessionManager = SessionManager.open(args.sessionPath, args.sessionDir);
+  const sessionManager = SessionManager.open(args.sessionPath);
   return {
     kind: "session",
     sessionPath: args.sessionPath,

@@ -15,13 +15,12 @@ export function serializeSessionInfo(info: SessionInfo): SerializedSessionInfo {
 
 export async function listSerializedSessions(args: {
   cwd: string;
-  sessionDir?: string;
 }): Promise<{
   currentProject: SerializedSessionInfo[];
   allProjects: SerializedSessionInfo[];
 }> {
   const [currentProject, allProjects] = await Promise.all([
-    SessionManager.list(args.cwd, args.sessionDir),
+    SessionManager.list(args.cwd),
     SessionManager.listAll(),
   ]);
 
