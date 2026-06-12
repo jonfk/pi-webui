@@ -6,6 +6,7 @@
     <title>pi-webui</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/client/sidebar.css" />
     <link rel="stylesheet" href="/vendor/hljs/one-dark.min.css" />
     <script src="/vendor/marked.min.js"></script>
     <script src="/vendor/hljs/highlight.min.js"></script>
@@ -26,6 +27,7 @@
   </head>
   <body>
     <div class="app-shell">
+      <div id="workspace-sidebar-root"></div>
       <main class="main">
         <section id="log" class="log"></section>
 
@@ -65,5 +67,6 @@
     </div>
     <div id="toast-layer" class="toast-layer"></div>
     <script type="module" src="/app.js"></script>
+    <script type="module" src="/client/sidebar.js"></script>
   </body>
 </html>
